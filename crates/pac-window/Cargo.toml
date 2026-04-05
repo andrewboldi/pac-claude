@@ -1,0 +1,9 @@
+[package]
+name = "pac-window"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+winit = { workspace = true }
+log = { workspace = true }
+pac-render = { workspace = true }

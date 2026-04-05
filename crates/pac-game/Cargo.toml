@@ -1,0 +1,13 @@
+[package]
+name = "pac-game"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+pac-math = { workspace = true }
+pac-render = { workspace = true }
+pac-window = { workspace = true }
