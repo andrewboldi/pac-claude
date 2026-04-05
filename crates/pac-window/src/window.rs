@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use crate::input::InputState;
+use pac_render::{wgpu, GpuContext, TrianglePipeline};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
@@ -22,9 +25,15 @@ impl Default for WindowConfig {
     }
 }
 
+struct RenderState {
+    gpu: GpuContext<'static>,
+    triangle: TrianglePipeline,
+}
+
 struct App {
     config: WindowConfig,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
+    render: Option<RenderState>,
     input: InputState,
 }
 
@@ -36,7 +45,19 @@ impl ApplicationHandler for App {
                 .with_inner_size(LogicalSize::new(self.config.width, self.config.height));
             match event_loop.create_window(attrs) {
                 Ok(window) => {
-                    log::info!("Window created: {}x{}", self.config.width, self.config.height);
+                    let window = Arc::new(window);
+                    let size = window.inner_size();
+                    log::info!("Window created: {}x{}", size.width, size.height);
+
+                    let gpu = pollster::block_on(GpuContext::new(
+                        window.clone(),
+                        size.width,
+                        size.height,
+                    ));
+                    let triangle = TrianglePipeline::new(&gpu.device, gpu.format());
+                    self.render = Some(RenderState { gpu, triangle });
+
+                    window.request_redraw();
                     self.window = Some(window);
                 }
                 Err(e) => {
@@ -57,9 +78,33 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(PhysicalSize { width, height }) => {
                 log::info!("Window resized to {width}x{height}");
+                if let Some(render) = &mut self.render {
+                    render.gpu.resize(width, height);
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.input.begin_frame();
+
+                if let Some(render) = &mut self.render {
+                    match render.triangle.render_frame(&render.gpu) {
+                        Ok(()) => {}
+                        Err(wgpu::SurfaceError::Lost) => {
+                            let (w, h) = render.gpu.size();
+                            render.gpu.resize(w, h);
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            log::error!("Out of GPU memory");
+                            event_loop.exit();
+                        }
+                        Err(e) => {
+                            log::warn!("Surface error: {e:?}");
+                        }
+                    }
+                }
+
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             _ => {}
         }
@@ -72,6 +117,7 @@ pub fn run(config: WindowConfig) {
     let mut app = App {
         config,
         window: None,
+        render: None,
         input: InputState::new(),
     };
     event_loop.run_app(&mut app).expect("event loop error");
