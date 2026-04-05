@@ -1,4 +1,5 @@
 use crate::buffer::Vertex;
+use crate::depth::{DepthBuffer, DEPTH_FORMAT};
 use crate::GpuContext;
 
 // ── Shader loading ──────────────────────────────────────────────────────
@@ -186,7 +187,7 @@ impl TrianglePipeline {
                 vertex_layouts: &[],
                 bind_group_layouts: &[],
                 surface_format,
-                depth_format: None,
+                depth_format: Some(DEPTH_FORMAT),
                 cull_mode: Some(wgpu::Face::Back),
                 topology: wgpu::PrimitiveTopology::TriangleList,
             },
@@ -197,7 +198,11 @@ impl TrianglePipeline {
 
     /// Acquire the surface texture, encode a render pass that draws the triangle,
     /// submit commands, and present.
-    pub fn render_frame(&self, gpu: &GpuContext) -> Result<(), wgpu::SurfaceError> {
+    pub fn render_frame(
+        &self,
+        gpu: &GpuContext,
+        depth: &DepthBuffer,
+    ) -> Result<(), wgpu::SurfaceError> {
         let output = gpu.surface.get_current_texture()?;
         let view = output
             .texture
@@ -225,7 +230,14 @@ impl TrianglePipeline {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth.view(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 ..Default::default()
             });
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::input::InputState;
-use pac_render::{wgpu, GpuContext, TrianglePipeline};
+use pac_render::{wgpu, DepthBuffer, GpuContext, TrianglePipeline};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
@@ -27,6 +27,7 @@ impl Default for WindowConfig {
 
 struct RenderState {
     gpu: GpuContext<'static>,
+    depth: DepthBuffer,
     triangle: TrianglePipeline,
 }
 
@@ -54,8 +55,13 @@ impl ApplicationHandler for App {
                         size.width,
                         size.height,
                     ));
+                    let depth = DepthBuffer::new(&gpu.device, size.width, size.height);
                     let triangle = TrianglePipeline::new(&gpu.device, gpu.format());
-                    self.render = Some(RenderState { gpu, triangle });
+                    self.render = Some(RenderState {
+                        gpu,
+                        depth,
+                        triangle,
+                    });
 
                     window.request_redraw();
                     self.window = Some(window);
@@ -80,17 +86,21 @@ impl ApplicationHandler for App {
                 log::info!("Window resized to {width}x{height}");
                 if let Some(render) = &mut self.render {
                     render.gpu.resize(width, height);
+                    if width > 0 && height > 0 {
+                        render.depth.resize(&render.gpu.device, width, height);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
                 self.input.begin_frame();
 
                 if let Some(render) = &mut self.render {
-                    match render.triangle.render_frame(&render.gpu) {
+                    match render.triangle.render_frame(&render.gpu, &render.depth) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost) => {
                             let (w, h) = render.gpu.size();
                             render.gpu.resize(w, h);
+                            render.depth.resize(&render.gpu.device, w, h);
                         }
                         Err(wgpu::SurfaceError::OutOfMemory) => {
                             log::error!("Out of GPU memory");
