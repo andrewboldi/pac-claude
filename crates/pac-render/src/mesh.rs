@@ -1,11 +1,13 @@
 //! Mesh primitives with position, normal, and UV data.
 //!
 //! Each generator produces a [`Mesh`] containing [`Vertex3D`] vertices and
-//! `u32` triangle-list indices, ready for GPU upload.
+//! `u32` triangle-list indices, ready for GPU upload via [`Mesh::upload`].
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use crate::buffer::Vertex3D;
+use wgpu::util::DeviceExt;
+
+use crate::buffer::{InstanceBuffer, Vertex3D};
 
 /// Triangle-list mesh stored as indexed vertex data.
 #[derive(Debug, Clone)]
@@ -19,6 +21,26 @@ impl Mesh {
     #[inline]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
+    }
+
+    /// Upload vertex and index data to the GPU, producing a [`GpuMesh`]
+    /// ready for draw calls.
+    pub fn upload(&self, device: &wgpu::Device, label: &str) -> GpuMesh {
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{label}_vertices")),
+            contents: bytemuck::cast_slice(&self.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{label}_indices")),
+            contents: bytemuck::cast_slice(&self.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        GpuMesh {
+            vertex_buffer,
+            index_buffer,
+            index_count: self.indices.len() as u32,
+        }
     }
 
     /// Axis-aligned unit cube (side length 1) centered at the origin.
@@ -261,6 +283,50 @@ impl Mesh {
         }
 
         Self { vertices, indices }
+    }
+}
+
+// ── GpuMesh ─────────────────────────────────────────────────────────────
+
+/// A mesh uploaded to the GPU, holding vertex and index buffers.
+///
+/// Created via [`Mesh::upload`]. Supports both single-instance and
+/// instanced draw calls.
+pub struct GpuMesh {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+}
+
+impl GpuMesh {
+    /// Number of indices in this mesh.
+    #[inline]
+    pub fn index_count(&self) -> u32 {
+        self.index_count
+    }
+
+    /// Bind buffers and issue a single-instance indexed draw call.
+    pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+
+    /// Bind buffers and issue an instanced indexed draw call.
+    ///
+    /// The instance buffer is bound to vertex slot 1. The pipeline must be
+    /// configured with both [`Vertex3D::layout()`](crate::buffer::Vertex3D)
+    /// (slot 0) and [`InstanceData::layout()`](crate::buffer::InstanceData)
+    /// (slot 1).
+    pub fn draw_instanced<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        instances: &'a InstanceBuffer,
+    ) {
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, instances.slice());
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..instances.count());
     }
 }
 
