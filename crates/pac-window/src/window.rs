@@ -1,3 +1,4 @@
+use crate::input::InputState;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
@@ -24,6 +25,7 @@ impl Default for WindowConfig {
 struct App {
     config: WindowConfig,
     window: Option<Window>,
+    input: InputState,
 }
 
 impl ApplicationHandler for App {
@@ -46,6 +48,8 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.input.process_event(&event);
+
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested, exiting");
@@ -53,6 +57,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(PhysicalSize { width, height }) => {
                 log::info!("Window resized to {width}x{height}");
+            }
+            WindowEvent::RedrawRequested => {
+                self.input.begin_frame();
             }
             _ => {}
         }
@@ -65,6 +72,7 @@ pub fn run(config: WindowConfig) {
     let mut app = App {
         config,
         window: None,
+        input: InputState::new(),
     };
     event_loop.run_app(&mut app).expect("event loop error");
 }
