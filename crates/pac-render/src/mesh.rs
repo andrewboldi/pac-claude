@@ -305,6 +305,18 @@ impl GpuMesh {
         self.index_count
     }
 
+    /// Vertex buffer slice for manual binding.
+    #[inline]
+    pub fn vertex_slice(&self) -> wgpu::BufferSlice<'_> {
+        self.vertex_buffer.slice(..)
+    }
+
+    /// Index buffer slice for manual binding.
+    #[inline]
+    pub fn index_slice(&self) -> wgpu::BufferSlice<'_> {
+        self.index_buffer.slice(..)
+    }
+
     /// Bind buffers and issue a single-instance indexed draw call.
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));

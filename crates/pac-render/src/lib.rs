@@ -6,6 +6,7 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod pipeline;
+pub mod renderer;
 pub mod scene;
 pub mod texture;
 
@@ -20,6 +21,7 @@ pub use pipeline::{
     load_shader, uniform_bind_group, uniform_bind_group_layout, PipelineDescriptor, PhongPipeline,
     RenderPipeline, TrianglePipeline,
 };
+pub use renderer::{Renderer, SceneUniforms};
 pub use scene::{SceneGraph, SceneNode, NodeHandle};
 pub use texture::Texture;
 pub use wgpu;
