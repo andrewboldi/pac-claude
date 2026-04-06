@@ -1,5 +1,6 @@
-use crate::buffer::Vertex;
+use crate::buffer::{InstanceData, Vertex, Vertex3D};
 use crate::depth::{DepthBuffer, DEPTH_FORMAT};
+use crate::material::Material;
 use crate::GpuContext;
 
 // ── Shader loading ──────────────────────────────────────────────────────
@@ -249,5 +250,93 @@ impl TrianglePipeline {
         output.present();
 
         Ok(())
+    }
+}
+
+// ── PhongPipeline ────────────────────────────────────────────────────────
+
+/// Render pipeline for Phong-lit meshes with material textures.
+///
+/// Bind group layout:
+///   - Group 0: Scene uniforms (view_proj, camera_pos)
+///   - Group 1: Light uniforms (ambient, directional, point lights)
+///   - Group 2: Material (uniforms + diffuse texture + sampler)
+pub struct PhongPipeline {
+    pipeline: RenderPipeline,
+    scene_layout: wgpu::BindGroupLayout,
+    light_layout: wgpu::BindGroupLayout,
+    material_layout: wgpu::BindGroupLayout,
+}
+
+impl PhongPipeline {
+    /// Create a new Phong pipeline.
+    ///
+    /// The caller manages scene/light/material bind groups externally and
+    /// passes them during rendering via [`draw`].
+    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+        let shader = load_shader(
+            device,
+            "phong.wgsl",
+            include_str!("../../../assets/shaders/phong.wgsl"),
+        );
+
+        let scene_layout = uniform_bind_group_layout(
+            device,
+            "phong_scene_layout",
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        );
+        let light_layout = uniform_bind_group_layout(
+            device,
+            "phong_light_layout",
+            wgpu::ShaderStages::FRAGMENT,
+        );
+        let material_layout = Material::bind_group_layout(device);
+
+        let pipeline = RenderPipeline::new(
+            device,
+            &PipelineDescriptor {
+                label: "phong_pipeline",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[Vertex3D::layout(), InstanceData::layout()],
+                bind_group_layouts: &[&scene_layout, &light_layout, &material_layout],
+                surface_format,
+                depth_format: Some(DEPTH_FORMAT),
+                cull_mode: Some(wgpu::Face::Back),
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
+        );
+
+        Self {
+            pipeline,
+            scene_layout,
+            light_layout,
+            material_layout,
+        }
+    }
+
+    /// The underlying render pipeline for use with `set_pipeline`.
+    #[inline]
+    pub fn pipeline(&self) -> &wgpu::RenderPipeline {
+        self.pipeline.inner()
+    }
+
+    /// Bind group layout for scene uniforms (group 0).
+    #[inline]
+    pub fn scene_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.scene_layout
+    }
+
+    /// Bind group layout for light uniforms (group 1).
+    #[inline]
+    pub fn light_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.light_layout
+    }
+
+    /// Bind group layout for material (group 2).
+    #[inline]
+    pub fn material_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.material_layout
     }
 }

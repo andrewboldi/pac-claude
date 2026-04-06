@@ -4,6 +4,9 @@
 // Vertex slot 1: InstanceData (model matrix columns)      -- locations 3-6
 // Bind group 0, binding 0: SceneUniforms (view_proj + camera_pos)
 // Bind group 1, binding 0: LightUniforms (ambient, directional, point lights)
+// Bind group 2, binding 0: MaterialUniforms (diffuse color + specular/shininess)
+// Bind group 2, binding 1: Diffuse texture (2D)
+// Bind group 2, binding 2: Diffuse sampler
 
 const MAX_POINT_LIGHTS: u32 = 4u;
 
@@ -51,6 +54,22 @@ struct LightUniforms {
 @group(1) @binding(0)
 var<uniform> lights: LightUniforms;
 
+// ── Material data ───────────────────────────────────────────────────────
+
+struct MaterialUniforms {
+    diffuse_color: vec4<f32>,      // xyz = RGB, w = has_texture (0.0 or 1.0)
+    specular_shininess: vec4<f32>, // xyz = specular RGB, w = shininess exponent
+};
+
+@group(2) @binding(0)
+var<uniform> material: MaterialUniforms;
+
+@group(2) @binding(1)
+var diffuse_texture: texture_2d<f32>;
+
+@group(2) @binding(2)
+var diffuse_sampler: sampler;
+
 // ── Vertex shader ───────────────────────────────────────────────────────
 
 struct VertexOutput {
@@ -88,18 +107,22 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 
 // ── Fragment shader ─────────────────────────────────────────────────────
 
-// Material parameters (fixed for now; a future material system will make these dynamic).
-const MAT_DIFFUSE: vec3<f32> = vec3<f32>(0.7, 0.7, 0.7);
-const MAT_SPECULAR: vec3<f32> = vec3<f32>(0.5, 0.5, 0.5);
-const SHININESS: f32 = 32.0;
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let view_dir = normalize(scene.camera_pos.xyz - in.world_position);
 
+    // Resolve diffuse color: sample texture if has_texture flag is set,
+    // otherwise use the uniform diffuse color directly.
+    let has_tex = material.diffuse_color.w;
+    let tex_sample = textureSample(diffuse_texture, diffuse_sampler, in.tex_coords);
+    let mat_diffuse = mix(material.diffuse_color.xyz, material.diffuse_color.xyz * tex_sample.xyz, has_tex);
+
+    let mat_specular = material.specular_shininess.xyz;
+    let shininess = material.specular_shininess.w;
+
     // Ambient contribution.
-    var color = lights.ambient.xyz * MAT_DIFFUSE;
+    var color = lights.ambient.xyz * mat_diffuse;
 
     // Directional light.
     let dir_l = normalize(lights.directional.direction.xyz);
@@ -107,11 +130,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dir_color = lights.directional.color.xyz * dir_intensity;
 
     let dir_ndl = max(dot(n, dir_l), 0.0);
-    color += MAT_DIFFUSE * dir_color * dir_ndl;
+    color += mat_diffuse * dir_color * dir_ndl;
 
     let dir_half = normalize(dir_l + view_dir);
-    let dir_spec = pow(max(dot(n, dir_half), 0.0), SHININESS);
-    color += MAT_SPECULAR * dir_color * dir_spec;
+    let dir_spec = pow(max(dot(n, dir_half), 0.0), shininess);
+    color += mat_specular * dir_color * dir_spec;
 
     // Point lights.
     for (var i = 0u; i < lights.num_point_lights; i++) {
@@ -127,13 +150,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // Diffuse.
         let pl_ndl = max(dot(n, pl_dir), 0.0);
-        color += MAT_DIFFUSE * pl_color * pl_ndl * att;
+        color += mat_diffuse * pl_color * pl_ndl * att;
 
         // Specular (Blinn-Phong).
         let pl_half = normalize(pl_dir + view_dir);
-        let pl_spec = pow(max(dot(n, pl_half), 0.0), SHININESS);
-        color += MAT_SPECULAR * pl_color * pl_spec * att;
+        let pl_spec = pow(max(dot(n, pl_half), 0.0), shininess);
+        color += mat_specular * pl_color * pl_spec * att;
     }
 
-    return vec4<f32>(color, 1.0);
+    // Blend alpha from texture when textured, otherwise fully opaque.
+    let alpha = mix(1.0, tex_sample.a, has_tex);
+
+    return vec4<f32>(color, alpha);
 }

@@ -17,8 +17,8 @@ pub use light::{DirectionalLight, LightManager, PointLight, MAX_POINT_LIGHTS};
 pub use material::{Material, MaterialUniforms};
 pub use mesh::{GpuMesh, Mesh};
 pub use pipeline::{
-    load_shader, uniform_bind_group, uniform_bind_group_layout, PipelineDescriptor, RenderPipeline,
-    TrianglePipeline,
+    load_shader, uniform_bind_group, uniform_bind_group_layout, PipelineDescriptor, PhongPipeline,
+    RenderPipeline, TrianglePipeline,
 };
 pub use scene::{SceneGraph, SceneNode, NodeHandle};
 pub use texture::Texture;
