@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod buffer;
 pub mod camera;
 pub mod context;
@@ -24,4 +25,5 @@ pub use pipeline::{
 pub use renderer::{Renderer, SceneUniforms};
 pub use scene::{SceneGraph, SceneNode, NodeHandle};
 pub use texture::Texture;
+pub use asset::{AssetManager, AssetStore, Handle, MaterialHandle, MeshHandle, TextureHandle};
 pub use wgpu;
