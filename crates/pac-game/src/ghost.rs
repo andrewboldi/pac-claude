@@ -23,6 +23,9 @@ pub enum GhostState {
     Eaten,
 }
 
+/// Alias used by AI modules and the mode controller.
+pub type GhostMode = GhostState;
+
 /// Identifies which ghost this is (determines AI personality in downstream modules).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GhostId {
@@ -156,6 +159,59 @@ impl Ghost {
 
     pub fn spawn_y(&self) -> usize {
         self.spawn_y
+    }
+
+    // ── Aliases for AI modules ──────────────────────────────
+
+    /// Alias for [`state`](Ghost::state) used by AI modules.
+    pub fn mode(&self) -> GhostState {
+        self.state
+    }
+
+    /// Alias for [`spawn_x`](Ghost::spawn_x).
+    pub fn home_x(&self) -> usize {
+        self.spawn_x
+    }
+
+    /// Alias for [`spawn_y`](Ghost::spawn_y).
+    pub fn home_y(&self) -> usize {
+        self.spawn_y
+    }
+
+    /// Alias for [`in_house`](Ghost::in_house).
+    pub fn in_ghost_house(&self) -> bool {
+        self.in_house
+    }
+
+    /// Alias for [`queued_dir`](Ghost::queued_dir).
+    pub fn requested_dir(&self) -> Option<Direction> {
+        self.queued_dir
+    }
+
+    /// Whether the ghost can move in `dir` from the current tile.
+    pub fn is_direction_passable(&self, dir: Direction, maze: &MazeData) -> bool {
+        let (tx, ty) = self.target_coords(self.grid_x, self.grid_y, dir);
+        ghost_is_passable(maze, tx, ty, self.state, self.in_house)
+    }
+
+    /// Grid coordinates of the adjacent tile in `dir` (with tunnel wrapping).
+    pub fn neighbor_tile(&self, dir: Direction) -> (usize, usize) {
+        self.target_coords(self.grid_x, self.grid_y, dir)
+    }
+
+    /// Direct state setter used by the mode controller.
+    pub fn set_mode(&mut self, mode: GhostState) {
+        self.state = mode;
+    }
+
+    /// Override normal movement speed (used by Blinky Cruise Elroy).
+    pub fn set_speed_override(&mut self, speed: f32) {
+        self.normal_speed = speed;
+    }
+
+    /// Restore normal movement speed to the default.
+    pub fn clear_speed_override(&mut self) {
+        self.normal_speed = NORMAL_SPEED;
     }
 
     /// Current effective speed in tiles per second, based on state.

@@ -263,7 +263,7 @@ impl Default for GhostModeController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ghost::{Ghost, GhostMode};
+    use crate::ghost::{Ghost, GhostId, GhostMode};
     use crate::maze::{MazeData, TileType, MAZE_HEIGHT, MAZE_WIDTH};
 
     const DT: f32 = 1.0 / 60.0;
@@ -283,10 +283,10 @@ mod tests {
 
     fn four_ghosts() -> Vec<Ghost> {
         vec![
-            Ghost::new(5, 5),
-            Ghost::new(6, 5),
-            Ghost::new(7, 5),
-            Ghost::new(8, 5),
+            Ghost::new(GhostId::Blinky, 5, 5),
+            Ghost::new(GhostId::Pinky, 6, 5),
+            Ghost::new(GhostId::Inky, 7, 5),
+            Ghost::new(GhostId::Clyde, 8, 5),
         ]
     }
 
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn return_ghost_to_base_during_scatter() {
         let ctrl = GhostModeController::new();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         ghost.set_mode(GhostMode::Eaten);
 
@@ -654,7 +654,7 @@ mod tests {
         let mut ghosts = four_ghosts();
         advance(&mut ctrl, &mut ghosts, 7.0); // transition to chase
 
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         ghost.set_mode(GhostMode::Eaten);
 
@@ -668,7 +668,7 @@ mod tests {
         let mut ghosts = four_ghosts();
         ctrl.trigger_frightened(&mut ghosts);
 
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         ghost.set_mode(GhostMode::Eaten);
 

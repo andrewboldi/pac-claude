@@ -209,6 +209,7 @@ fn distance_sq(x1: usize, y1: usize, x2: usize, y2: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ghost::GhostId;
     use crate::maze::{MazeData, TileType, MAZE_HEIGHT, MAZE_WIDTH};
 
     const DT: f32 = 1.0 / 60.0;
@@ -285,7 +286,7 @@ mod tests {
     fn chase_targets_pacman_directly() {
         let maze = open_maze();
         // Ghost at (5, 5), Pac-Man at (5, 10) — directly below.
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(5, 10);
         let mut ai = BlinkyAi::new();
@@ -300,7 +301,7 @@ mod tests {
     fn chase_picks_shortest_direction() {
         let maze = open_maze();
         // Ghost at (10, 5), Pac-Man at (20, 5) — to the right.
-        let mut ghost = Ghost::new(10, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 10, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(20, 5);
         let mut ai = BlinkyAi::new();
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn chase_picks_left_when_pacman_is_left() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(15, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 15, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(5, 5);
         let mut ai = BlinkyAi::new();
@@ -329,7 +330,7 @@ mod tests {
     fn scatter_targets_corner() {
         let maze = open_maze();
         // Ghost at (10, 15) in scatter mode — should move toward top-right (25, 0).
-        let mut ghost = Ghost::new(10, 15);
+        let mut ghost = Ghost::new(GhostId::Blinky, 10, 15);
         // Ghost starts in Scatter, so no mode change needed.
         let pacman = PacMan::new(5, 20);
         let mut ai = BlinkyAi::new();
@@ -349,7 +350,7 @@ mod tests {
     #[test]
     fn elroy_level1_at_20_pellets() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -361,7 +362,7 @@ mod tests {
     #[test]
     fn elroy_level2_at_10_pellets() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     fn elroy_off_above_threshold() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -385,7 +386,7 @@ mod tests {
     #[test]
     fn elroy1_speed_override_applied() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -397,7 +398,7 @@ mod tests {
     #[test]
     fn elroy2_speed_override_applied() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -409,7 +410,7 @@ mod tests {
     #[test]
     fn elroy_speed_cleared_in_frightened() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Frightened);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -417,14 +418,14 @@ mod tests {
         ai.update(&mut ghost, &pacman, &maze, 5);
         // Elroy level set, but speed override cleared for frightened mode.
         assert_eq!(ai.elroy_level(), 2);
-        assert!((ghost.speed() - 5.0).abs() < f32::EPSILON); // FRIGHTENED_SPEED
+        assert!((ghost.speed() - 4.0).abs() < f32::EPSILON); // FRIGHTENED_SPEED
     }
 
     #[test]
     fn elroy_scatter_targets_pacman() {
         let maze = open_maze();
         // Ghost in scatter mode with Elroy active should target Pac-Man, not corner.
-        let mut ghost = Ghost::new(10, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 10, 5);
         // Starts in Scatter mode (default).
         let pacman = PacMan::new(20, 5);
         let mut ai = BlinkyAi::new();
@@ -443,7 +444,7 @@ mod tests {
     fn does_not_reverse_in_corridor() {
         let maze = corridor_maze();
         // Ghost moving right in a horizontal corridor.
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Chase);
         start_moving(&mut ghost, Direction::Right, &maze);
         // Now current_dir=Right, heading toward (6, 5).
@@ -463,7 +464,7 @@ mod tests {
     fn picks_best_at_intersection() {
         let maze = t_junction_maze();
         // Ghost approaching the T-junction from the left with current_dir=Right.
-        let mut ghost = Ghost::new(9, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 9, 5);
         ghost.set_mode(GhostMode::Chase);
         start_moving(&mut ghost, Direction::Right, &maze);
         // Now heading toward (10, 5), current_dir=Right.
@@ -482,7 +483,7 @@ mod tests {
     #[test]
     fn frightened_picks_valid_direction() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Frightened);
         let pacman = PacMan::new(10, 10);
         let mut ai = BlinkyAi::new();
@@ -499,7 +500,7 @@ mod tests {
     fn frightened_does_not_reverse_when_options_exist() {
         let maze = t_junction_maze();
         // Ghost approaching intersection with current_dir=Right.
-        let mut ghost = Ghost::new(9, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 9, 5);
         ghost.set_mode(GhostMode::Frightened);
         start_moving(&mut ghost, Direction::Right, &maze);
         // Now heading toward (10, 5), current_dir=Right.
@@ -519,7 +520,7 @@ mod tests {
     #[test]
     fn eaten_targets_ghost_house_entrance() {
         let maze = open_maze();
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         ghost.set_mode(GhostMode::Eaten);
         let pacman = PacMan::new(20, 20);
         let mut ai = BlinkyAi::new();
@@ -545,7 +546,7 @@ mod tests {
         // Up tile (10, 9): dist=(10-7)^2+(9-7)^2 = 9+4=13
         // Left tile (9, 10): dist=(9-7)^2+(10-7)^2 = 4+9=13
         // Tie → Up wins.
-        let mut ghost = Ghost::new(10, 10);
+        let mut ghost = Ghost::new(GhostId::Blinky, 10, 10);
         ghost.set_mode(GhostMode::Chase);
         let pacman = PacMan::new(7, 7);
         let mut ai = BlinkyAi::new();
@@ -558,7 +559,7 @@ mod tests {
 
     #[test]
     fn ghost_speed_override() {
-        let mut ghost = Ghost::new(5, 5);
+        let mut ghost = Ghost::new(GhostId::Blinky, 5, 5);
         let base_speed = ghost.speed();
         ghost.set_speed_override(10.0);
         assert!((ghost.speed() - 10.0).abs() < f32::EPSILON);

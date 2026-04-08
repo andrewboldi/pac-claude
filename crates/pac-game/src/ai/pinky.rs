@@ -167,6 +167,7 @@ fn is_passable_for_ghost(ghost: &Ghost, maze: &MazeData, x: usize, y: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ghost::GhostId;
 
     /// Open maze with border walls.
     fn test_maze() -> MazeData {
@@ -202,7 +203,7 @@ mod tests {
 
     #[test]
     fn scatter_target_is_top_left() {
-        let ghost = Ghost::new(14, 14);
+        let ghost = Ghost::new(GhostId::Pinky, 14, 14);
         let pac = PacMan::new(14, 23);
         // Ghost starts in Scatter mode.
         let target = target_tile(&ghost, &pac);
@@ -212,7 +213,7 @@ mod tests {
     #[test]
     fn pick_direction_toward_target() {
         let maze = test_maze();
-        let ghost = Ghost::new(5, 5);
+        let ghost = Ghost::new(GhostId::Pinky, 5, 5);
         // Target is to the right and down.
         let dir = pick_direction(&ghost, &maze, (20, 20));
         // With no current direction (no reverse constraint), should pick Down
@@ -229,7 +230,7 @@ mod tests {
 
     #[test]
     fn eaten_targets_home_tile() {
-        let mut ghost = Ghost::new(14, 14);
+        let mut ghost = Ghost::new(GhostId::Pinky, 14, 14);
         ghost.set_mode(GhostMode::Eaten);
         let pac = PacMan::new(5, 5);
         let target = target_tile(&ghost, &pac);
@@ -241,7 +242,7 @@ mod tests {
         let mut maze = test_maze();
         // Wall to the right of ghost.
         maze.tiles[5][6] = TileType::Wall;
-        let ghost = Ghost::new(5, 5);
+        let ghost = Ghost::new(GhostId::Pinky, 5, 5);
         // Target is to the right.
         let dir = pick_direction(&ghost, &maze, (20, 5));
         // Can't go right (wall), should pick an alternative.

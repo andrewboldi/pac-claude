@@ -5,6 +5,7 @@
 //! *where* to go.
 
 pub mod blinky;
+pub mod inky;
 pub mod pinky;
 
 pub use blinky::BlinkyAi;
