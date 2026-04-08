@@ -340,3 +340,245 @@ impl PhongPipeline {
         &self.material_layout
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    compatible_surface: None,
+                    ..Default::default()
+                })
+                .await?;
+            adapter
+                .request_device(&wgpu::DeviceDescriptor::default(), None)
+                .await
+                .ok()
+        })
+    }
+
+    const MINIMAL_SHADER: &str = r#"
+        @vertex fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f {
+            return vec4f(0.0, 0.0, 0.0, 1.0);
+        }
+        @fragment fn fs_main() -> @location(0) vec4f {
+            return vec4f(1.0, 0.0, 0.0, 1.0);
+        }
+    "#;
+
+    const VERTEX3D_SHADER: &str = r#"
+        struct VertexInput {
+            @location(0) position: vec3f,
+            @location(1) normal: vec3f,
+            @location(2) texcoord: vec2f,
+        }
+        @vertex fn vs_main(in: VertexInput) -> @builtin(position) vec4f {
+            return vec4f(in.position, 1.0);
+        }
+        @fragment fn fs_main() -> @location(0) vec4f {
+            return vec4f(1.0, 0.0, 0.0, 1.0);
+        }
+    "#;
+
+    // ── load_shader ─────────────────────────────────────────────
+
+    #[test]
+    fn load_shader_creates_module() {
+        let Some((device, _)) = test_device() else { return };
+        let _shader = load_shader(&device, "test_shader", MINIMAL_SHADER);
+    }
+
+    // ── uniform_bind_group_layout ───────────────────────────────
+
+    #[test]
+    fn uniform_layout_vertex_visibility() {
+        let Some((device, _)) = test_device() else { return };
+        let _layout =
+            uniform_bind_group_layout(&device, "test", wgpu::ShaderStages::VERTEX);
+    }
+
+    #[test]
+    fn uniform_layout_fragment_visibility() {
+        let Some((device, _)) = test_device() else { return };
+        let _layout =
+            uniform_bind_group_layout(&device, "test", wgpu::ShaderStages::FRAGMENT);
+    }
+
+    #[test]
+    fn uniform_layout_vertex_fragment_visibility() {
+        let Some((device, _)) = test_device() else { return };
+        let _layout = uniform_bind_group_layout(
+            &device,
+            "test",
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        );
+    }
+
+    // ── uniform_bind_group ──────────────────────────────────────
+
+    #[test]
+    fn uniform_bind_group_creates_group() {
+        let Some((device, _)) = test_device() else { return };
+        let layout =
+            uniform_bind_group_layout(&device, "layout", wgpu::ShaderStages::VERTEX);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test_buf"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let _bg = uniform_bind_group(&device, "bg", &layout, &buffer);
+    }
+
+    // ── RenderPipeline ──────────────────────────────────────────
+
+    #[test]
+    fn render_pipeline_no_depth_no_bindings() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "test", MINIMAL_SHADER);
+        let _pipeline = RenderPipeline::new(
+            &device,
+            &PipelineDescriptor {
+                label: "test_pipeline",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[],
+                bind_group_layouts: &[],
+                surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                depth_format: None,
+                cull_mode: None,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
+        );
+    }
+
+    #[test]
+    fn render_pipeline_with_depth() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "test", MINIMAL_SHADER);
+        let _pipeline = RenderPipeline::new(
+            &device,
+            &PipelineDescriptor {
+                label: "test_depth",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[],
+                bind_group_layouts: &[],
+                surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                depth_format: Some(DEPTH_FORMAT),
+                cull_mode: Some(wgpu::Face::Back),
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
+        );
+    }
+
+    #[test]
+    fn render_pipeline_with_bind_group_layout() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "test", MINIMAL_SHADER);
+        let layout =
+            uniform_bind_group_layout(&device, "test", wgpu::ShaderStages::VERTEX);
+        let _pipeline = RenderPipeline::new(
+            &device,
+            &PipelineDescriptor {
+                label: "test_bg",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[],
+                bind_group_layouts: &[&layout],
+                surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                depth_format: None,
+                cull_mode: None,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
+        );
+    }
+
+    #[test]
+    fn render_pipeline_inner_returns_reference() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "test", MINIMAL_SHADER);
+        let pipeline = RenderPipeline::new(
+            &device,
+            &PipelineDescriptor {
+                label: "test_inner",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[],
+                bind_group_layouts: &[],
+                surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                depth_format: None,
+                cull_mode: None,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
+        );
+        let _inner = pipeline.inner();
+    }
+
+    #[test]
+    fn render_pipeline_for_vertex() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "v3d", VERTEX3D_SHADER);
+        let _pipeline = RenderPipeline::for_vertex::<Vertex3D>(
+            &device,
+            "test_for_vertex",
+            &shader,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        );
+    }
+
+    #[test]
+    fn render_pipeline_line_list_topology() {
+        let Some((device, _)) = test_device() else { return };
+        let shader = load_shader(&device, "test", MINIMAL_SHADER);
+        let _pipeline = RenderPipeline::new(
+            &device,
+            &PipelineDescriptor {
+                label: "test_lines",
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                vertex_layouts: &[],
+                bind_group_layouts: &[],
+                surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                depth_format: None,
+                cull_mode: None,
+                topology: wgpu::PrimitiveTopology::LineList,
+            },
+        );
+    }
+
+    // ── TrianglePipeline ────────────────────────────────────────
+
+    #[test]
+    fn triangle_pipeline_creates() {
+        let Some((device, _)) = test_device() else { return };
+        let _tp = TrianglePipeline::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb);
+    }
+
+    // ── PhongPipeline ───────────────────────────────────────────
+
+    #[test]
+    fn phong_pipeline_creates() {
+        let Some((device, _)) = test_device() else { return };
+        let _pp = PhongPipeline::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb);
+    }
+
+    #[test]
+    fn phong_pipeline_exposes_layouts() {
+        let Some((device, _)) = test_device() else { return };
+        let pp = PhongPipeline::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let _scene = pp.scene_layout();
+        let _light = pp.light_layout();
+        let _mat = pp.material_layout();
+        let _inner = pp.pipeline();
+    }
+}

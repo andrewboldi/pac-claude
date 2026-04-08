@@ -157,3 +157,111 @@ impl Texture {
         (s.width, s.height)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    compatible_surface: None,
+                    ..Default::default()
+                })
+                .await?;
+            adapter
+                .request_device(&wgpu::DeviceDescriptor::default(), None)
+                .await
+                .ok()
+        })
+    }
+
+    #[test]
+    fn from_rgba8_1x1() {
+        let Some((device, queue)) = test_device() else { return };
+        let rgba = [255u8, 0, 0, 255];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 1, 1, "test_1x1");
+        assert_eq!(tex.size(), (1, 1));
+    }
+
+    #[test]
+    fn from_rgba8_16x16() {
+        let Some((device, queue)) = test_device() else { return };
+        let rgba = vec![128u8; 4 * 16 * 16];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 16, 16, "test_16x16");
+        assert_eq!(tex.size(), (16, 16));
+    }
+
+    #[test]
+    fn from_rgba8_non_square() {
+        let Some((device, queue)) = test_device() else { return };
+        let rgba = vec![0u8; 4 * 32 * 64];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 32, 64, "test_non_square");
+        assert_eq!(tex.size(), (32, 64));
+    }
+
+    #[test]
+    fn from_png_bytes_decodes() {
+        let Some((device, queue)) = test_device() else { return };
+        // Create a minimal 2x1 PNG in memory
+        let mut buf = Vec::new();
+        {
+            let encoder = image::codecs::png::PngEncoder::new(&mut buf);
+            image::ImageEncoder::write_image(
+                encoder,
+                &[255, 0, 0, 255, 0, 255, 0, 255],
+                2,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        }
+        let tex = Texture::from_png_bytes(&device, &queue, &buf, "test_png");
+        assert_eq!(tex.size(), (2, 1));
+    }
+
+    #[test]
+    fn bind_group_layout_creates_layout() {
+        let Some((device, _)) = test_device() else { return };
+        let _layout = Texture::bind_group_layout(&device, "test_layout");
+    }
+
+    #[test]
+    fn bind_group_creates_group() {
+        let Some((device, queue)) = test_device() else { return };
+        let layout = Texture::bind_group_layout(&device, "test_layout");
+        let rgba = [255u8, 255, 255, 255];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 1, 1, "test");
+        let _bg = tex.bind_group(&device, "test_bg", &layout);
+    }
+
+    #[test]
+    fn size_matches_input_dimensions() {
+        let Some((device, queue)) = test_device() else { return };
+        for (w, h) in [(1, 1), (4, 4), (100, 50), (256, 256)] {
+            let rgba = vec![0u8; 4 * w as usize * h as usize];
+            let tex = Texture::from_rgba8(&device, &queue, &rgba, w, h, "test_size");
+            assert_eq!(tex.size(), (w, h), "mismatch for {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn texture_format_is_rgba8_srgb() {
+        let Some((device, queue)) = test_device() else { return };
+        let rgba = [0u8; 4];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 1, 1, "test_format");
+        assert_eq!(tex.texture.format(), wgpu::TextureFormat::Rgba8UnormSrgb);
+    }
+
+    #[test]
+    fn texture_usage_includes_binding_and_copy_dst() {
+        let Some((device, queue)) = test_device() else { return };
+        let rgba = [0u8; 4];
+        let tex = Texture::from_rgba8(&device, &queue, &rgba, 1, 1, "test_usage");
+        let usage = tex.texture.usage();
+        assert!(usage.contains(wgpu::TextureUsages::TEXTURE_BINDING));
+        assert!(usage.contains(wgpu::TextureUsages::COPY_DST));
+    }
+}

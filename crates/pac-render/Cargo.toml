@@ -10,3 +10,6 @@ bytemuck = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
 pac-math = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }

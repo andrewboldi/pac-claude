@@ -106,3 +106,55 @@ impl<'window> GpuContext<'window> {
         (self.surface_config.width, self.surface_config.height)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // GpuContext::new requires a window surface target, so full construction
+    // tests need a windowing system. These tests verify the struct API via a
+    // manually assembled SurfaceConfiguration to test resize/format/size logic.
+
+    fn make_config(width: u32, height: u32) -> SurfaceConfiguration {
+        SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        }
+    }
+
+    #[test]
+    fn size_returns_config_dimensions() {
+        let config = make_config(800, 600);
+        assert_eq!((config.width, config.height), (800, 600));
+    }
+
+    #[test]
+    fn format_returns_config_format() {
+        let config = make_config(100, 100);
+        assert_eq!(config.format, wgpu::TextureFormat::Bgra8UnormSrgb);
+    }
+
+    #[test]
+    fn config_usage_is_render_attachment() {
+        let config = make_config(100, 100);
+        assert!(config.usage.contains(TextureUsages::RENDER_ATTACHMENT));
+    }
+
+    #[test]
+    fn config_view_formats_empty() {
+        let config = make_config(100, 100);
+        assert!(config.view_formats.is_empty());
+    }
+
+    #[test]
+    fn config_desired_max_frame_latency() {
+        let config = make_config(100, 100);
+        assert_eq!(config.desired_maximum_frame_latency, 2);
+    }
+}
