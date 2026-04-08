@@ -147,4 +147,123 @@ mod tests {
         assert!((point_y.length() - 2.0).abs() < 1e-6);
         assert!((point_z.length() - 3.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn from_position_leaves_rotation_and_scale_default() {
+        let t = Transform::from_position(Vec3::new(5.0, 6.0, 7.0));
+        assert_eq!(t.rotation, Quat::IDENTITY);
+        assert_eq!(t.scale, Vec3::ONE);
+    }
+
+    #[test]
+    fn from_rotation_leaves_position_and_scale_default() {
+        let t = Transform::from_rotation(Quat::from_rotation_x(1.0));
+        assert_eq!(t.position, Vec3::ZERO);
+        assert_eq!(t.scale, Vec3::ONE);
+    }
+
+    #[test]
+    fn from_scale_leaves_position_and_rotation_default() {
+        let t = Transform::from_scale(Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(t.position, Vec3::ZERO);
+        assert_eq!(t.rotation, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn to_matrix_translates_point() {
+        let t = Transform::from_position(Vec3::new(10.0, 20.0, 30.0));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::ZERO);
+        assert!((result - Vec3::new(10.0, 20.0, 30.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn to_matrix_scales_point() {
+        let t = Transform::from_scale(Vec3::new(2.0, 3.0, 4.0));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::ONE);
+        assert!((result - Vec3::new(2.0, 3.0, 4.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn to_matrix_rotates_point_90_deg_z() {
+        let t = Transform::from_rotation(Quat::from_rotation_z(FRAC_PI_2));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::X);
+        // X rotated 90° around Z => Y
+        assert!((result - Vec3::Y).length() < 1e-5);
+    }
+
+    #[test]
+    fn to_matrix_rotates_point_90_deg_x() {
+        let t = Transform::from_rotation(Quat::from_rotation_x(FRAC_PI_2));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::Y);
+        // Y rotated 90° around X => Z
+        assert!((result - Vec3::Z).length() < 1e-5);
+    }
+
+    #[test]
+    fn to_matrix_rotates_point_90_deg_y() {
+        let t = Transform::from_rotation(Quat::from_rotation_y(FRAC_PI_2));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::Z);
+        // Z rotated 90° around Y => X
+        assert!((result - Vec3::X).length() < 1e-5);
+    }
+
+    #[test]
+    fn negative_scale_mirrors() {
+        let t = Transform::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::new(3.0, 4.0, 5.0));
+        assert!((result - Vec3::new(-3.0, 4.0, 5.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn zero_scale_collapses() {
+        let t = Transform::from_scale(Vec3::ZERO);
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::new(100.0, 200.0, 300.0));
+        assert!(result.length() < 1e-6);
+    }
+
+    #[test]
+    fn combined_transform_applies_scale_then_rotation_then_translation() {
+        let pos = Vec3::new(10.0, 0.0, 0.0);
+        let rot = Quat::from_rotation_z(FRAC_PI_2);
+        let scl = Vec3::new(2.0, 2.0, 2.0);
+        let t = Transform::new(pos, rot, scl);
+        let m = t.to_matrix();
+        // Point (1,0,0) -> scale -> (2,0,0) -> rotate 90° Z -> (0,2,0) -> translate -> (10,2,0)
+        let result = m.transform_point3(Vec3::X);
+        assert!((result - Vec3::new(10.0, 2.0, 0.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn identity_constant_fields() {
+        assert_eq!(Transform::IDENTITY.position, Vec3::ZERO);
+        assert_eq!(Transform::IDENTITY.rotation, Quat::IDENTITY);
+        assert_eq!(Transform::IDENTITY.scale, Vec3::ONE);
+    }
+
+    #[test]
+    fn clone_and_partial_eq() {
+        let t = Transform::new(
+            Vec3::new(1.0, 2.0, 3.0),
+            Quat::from_rotation_y(1.0),
+            Vec3::new(4.0, 5.0, 6.0),
+        );
+        let t2 = t;
+        assert_eq!(t, t2);
+        assert_ne!(t, Transform::IDENTITY);
+    }
+
+    #[test]
+    fn large_translation_values() {
+        let t = Transform::from_position(Vec3::new(1e6, -1e6, 1e6));
+        let m = t.to_matrix();
+        let result = m.transform_point3(Vec3::ZERO);
+        assert!((result - Vec3::new(1e6, -1e6, 1e6)).length() < 1.0);
+    }
 }
