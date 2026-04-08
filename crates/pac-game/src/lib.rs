@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod collision;
 pub mod ghost;
 pub mod maze;
