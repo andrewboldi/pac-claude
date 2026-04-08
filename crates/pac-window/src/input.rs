@@ -249,4 +249,213 @@ mod tests {
         let input = InputState::new();
         assert_eq!(input.mouse_position(), (0.0, 0.0));
     }
+
+    #[test]
+    fn default_trait_matches_new() {
+        let a = InputState::new();
+        let b = InputState::default();
+        assert_eq!(a.mouse_position(), b.mouse_position());
+        assert!(!b.key_held(KeyCode::KeyW));
+        assert!(!b.key_pressed(KeyCode::KeyW));
+        assert!(!b.key_released(KeyCode::KeyW));
+        assert!(!b.mouse_button_held(MouseButton::Left));
+    }
+
+    #[test]
+    fn release_without_prior_press() {
+        let mut input = InputState::new();
+        simulate_key_release(&mut input, KeyCode::KeyW);
+
+        assert!(input.key_released(KeyCode::KeyW));
+        assert!(!input.key_held(KeyCode::KeyW));
+        assert!(!input.key_pressed(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn double_press_same_key_stays_held() {
+        let mut input = InputState::new();
+        simulate_key_press(&mut input, KeyCode::KeyW);
+        simulate_key_press(&mut input, KeyCode::KeyW);
+
+        assert!(input.key_pressed(KeyCode::KeyW));
+        assert!(input.key_held(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn multiple_mouse_buttons_tracked_independently() {
+        let mut input = InputState::new();
+        simulate_mouse_press(&mut input, MouseButton::Left);
+        simulate_mouse_press(&mut input, MouseButton::Right);
+
+        assert!(input.mouse_button_held(MouseButton::Left));
+        assert!(input.mouse_button_held(MouseButton::Right));
+        assert!(!input.mouse_button_held(MouseButton::Middle));
+
+        simulate_mouse_release(&mut input, MouseButton::Left);
+        assert!(!input.mouse_button_held(MouseButton::Left));
+        assert!(input.mouse_button_held(MouseButton::Right));
+    }
+
+    #[test]
+    fn begin_frame_clears_released_sets() {
+        let mut input = InputState::new();
+        simulate_key_press(&mut input, KeyCode::KeyW);
+        simulate_key_release(&mut input, KeyCode::KeyW);
+        simulate_mouse_press(&mut input, MouseButton::Left);
+        simulate_mouse_release(&mut input, MouseButton::Left);
+
+        assert!(input.key_released(KeyCode::KeyW));
+        assert!(input.mouse_button_released(MouseButton::Left));
+
+        input.begin_frame();
+
+        assert!(!input.key_released(KeyCode::KeyW));
+        assert!(!input.mouse_button_released(MouseButton::Left));
+    }
+
+    #[test]
+    fn begin_frame_preserves_mouse_position() {
+        let mut input = InputState::new();
+        input.mouse_x = 100.0;
+        input.mouse_y = 200.0;
+
+        input.begin_frame();
+
+        assert_eq!(input.mouse_position(), (100.0, 200.0));
+    }
+
+    #[test]
+    fn full_lifecycle_across_frames() {
+        let mut input = InputState::new();
+
+        // Frame 1: press key
+        input.begin_frame();
+        simulate_key_press(&mut input, KeyCode::KeyW);
+        assert!(input.key_pressed(KeyCode::KeyW));
+        assert!(input.key_held(KeyCode::KeyW));
+
+        // Frame 2: key still held, no longer "pressed"
+        input.begin_frame();
+        assert!(!input.key_pressed(KeyCode::KeyW));
+        assert!(input.key_held(KeyCode::KeyW));
+
+        // Frame 3: release key
+        input.begin_frame();
+        simulate_key_release(&mut input, KeyCode::KeyW);
+        assert!(input.key_released(KeyCode::KeyW));
+        assert!(!input.key_held(KeyCode::KeyW));
+
+        // Frame 4: all clear
+        input.begin_frame();
+        assert!(!input.key_pressed(KeyCode::KeyW));
+        assert!(!input.key_held(KeyCode::KeyW));
+        assert!(!input.key_released(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn mouse_release_without_prior_press() {
+        let mut input = InputState::new();
+        simulate_mouse_release(&mut input, MouseButton::Right);
+
+        assert!(input.mouse_button_released(MouseButton::Right));
+        assert!(!input.mouse_button_held(MouseButton::Right));
+        assert!(!input.mouse_button_pressed(MouseButton::Right));
+    }
+
+    #[test]
+    fn simultaneous_key_and_mouse_input() {
+        let mut input = InputState::new();
+        simulate_key_press(&mut input, KeyCode::Space);
+        simulate_mouse_press(&mut input, MouseButton::Left);
+
+        assert!(input.key_pressed(KeyCode::Space));
+        assert!(input.key_held(KeyCode::Space));
+        assert!(input.mouse_button_pressed(MouseButton::Left));
+        assert!(input.mouse_button_held(MouseButton::Left));
+
+        input.begin_frame();
+
+        assert!(!input.key_pressed(KeyCode::Space));
+        assert!(input.key_held(KeyCode::Space));
+        assert!(!input.mouse_button_pressed(MouseButton::Left));
+        assert!(input.mouse_button_held(MouseButton::Left));
+    }
+
+    #[test]
+    fn mouse_position_overwritten_by_later_update() {
+        let mut input = InputState::new();
+        input.mouse_x = 10.0;
+        input.mouse_y = 20.0;
+        assert_eq!(input.mouse_position(), (10.0, 20.0));
+
+        input.mouse_x = 300.5;
+        input.mouse_y = 400.5;
+        assert_eq!(input.mouse_position(), (300.5, 400.5));
+    }
+
+    #[test]
+    fn press_release_press_within_same_frame() {
+        let mut input = InputState::new();
+        simulate_key_press(&mut input, KeyCode::KeyA);
+        simulate_key_release(&mut input, KeyCode::KeyA);
+        simulate_key_press(&mut input, KeyCode::KeyA);
+
+        // Both pressed and released should be set; held should be true
+        assert!(input.key_pressed(KeyCode::KeyA));
+        assert!(input.key_released(KeyCode::KeyA));
+        assert!(input.key_held(KeyCode::KeyA));
+    }
+
+    #[test]
+    fn many_keys_held_simultaneously() {
+        let mut input = InputState::new();
+        let keys = [
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::ShiftLeft,
+            KeyCode::Space,
+        ];
+        for &k in &keys {
+            simulate_key_press(&mut input, k);
+        }
+        for &k in &keys {
+            assert!(input.key_held(k));
+        }
+
+        // Release just one
+        simulate_key_release(&mut input, KeyCode::KeyS);
+        assert!(!input.key_held(KeyCode::KeyS));
+        assert!(input.key_held(KeyCode::KeyW));
+        assert!(input.key_held(KeyCode::Space));
+    }
+
+    #[test]
+    fn mouse_button_full_lifecycle() {
+        let mut input = InputState::new();
+
+        // Frame 1: press
+        input.begin_frame();
+        simulate_mouse_press(&mut input, MouseButton::Middle);
+        assert!(input.mouse_button_pressed(MouseButton::Middle));
+        assert!(input.mouse_button_held(MouseButton::Middle));
+
+        // Frame 2: held only
+        input.begin_frame();
+        assert!(!input.mouse_button_pressed(MouseButton::Middle));
+        assert!(input.mouse_button_held(MouseButton::Middle));
+
+        // Frame 3: release
+        input.begin_frame();
+        simulate_mouse_release(&mut input, MouseButton::Middle);
+        assert!(input.mouse_button_released(MouseButton::Middle));
+        assert!(!input.mouse_button_held(MouseButton::Middle));
+
+        // Frame 4: all clear
+        input.begin_frame();
+        assert!(!input.mouse_button_pressed(MouseButton::Middle));
+        assert!(!input.mouse_button_held(MouseButton::Middle));
+        assert!(!input.mouse_button_released(MouseButton::Middle));
+    }
 }

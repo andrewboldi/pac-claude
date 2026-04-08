@@ -203,4 +203,110 @@ mod tests {
         let t = TimeState::new();
         assert!((t.fixed_dt() - 1.0 / 60.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn default_trait_matches_new() {
+        let a = TimeState::new();
+        let b = TimeState::default();
+        assert_eq!(a.delta_time(), b.delta_time());
+        assert_eq!(a.total_time(), b.total_time());
+        assert_eq!(a.frame_count(), b.frame_count());
+        assert_eq!(a.fixed_dt(), b.fixed_dt());
+    }
+
+    #[test]
+    fn alpha_zero_when_accumulator_empty() {
+        let t = TimeState::new();
+        assert_eq!(t.alpha(), 0.0);
+    }
+
+    #[test]
+    fn should_do_fixed_update_false_initially() {
+        let mut t = TimeState::new();
+        assert!(!t.should_do_fixed_update());
+    }
+
+    #[test]
+    fn accumulator_residual_preserved() {
+        let mut t = TimeState::new();
+        let residual = 0.005;
+        t.accumulator = FIXED_DT + residual;
+
+        assert!(t.should_do_fixed_update());
+        assert!(!t.should_do_fixed_update());
+
+        assert!((t.accumulator - residual).abs() < 1e-10);
+    }
+
+    #[test]
+    fn max_delta_bounds_fixed_update_count() {
+        let mut t = TimeState::new();
+        t.accumulator = MAX_DELTA;
+
+        let mut count = 0;
+        while t.should_do_fixed_update() {
+            count += 1;
+        }
+
+        // MAX_DELTA (0.25s) at 60Hz = 15 fixed steps max
+        assert!(count <= 15, "got {} fixed updates from MAX_DELTA", count);
+        assert!(count >= 14, "expected at least 14, got {}", count);
+    }
+
+    #[test]
+    fn alpha_near_one_when_accumulator_nearly_full() {
+        let mut t = TimeState::new();
+        t.accumulator = FIXED_DT * 0.99;
+        let a = t.alpha();
+        assert!(a > 0.98 && a < 1.0, "alpha was {}", a);
+    }
+
+    #[test]
+    fn multiple_ticks_monotonic_total_time() {
+        let mut t = TimeState::new();
+        thread::sleep(Duration::from_millis(5));
+        t.tick();
+        let t1 = t.total_time();
+        thread::sleep(Duration::from_millis(5));
+        t.tick();
+        let t2 = t.total_time();
+        thread::sleep(Duration::from_millis(5));
+        t.tick();
+        let t3 = t.total_time();
+
+        assert!(t1 > 0.0);
+        assert!(t2 > t1);
+        assert!(t3 > t2);
+        assert_eq!(t.frame_count(), 3);
+    }
+
+    #[test]
+    fn fixed_dt_constant_across_ticks() {
+        let mut t = TimeState::new();
+        let dt_before = t.fixed_dt();
+        thread::sleep(Duration::from_millis(5));
+        t.tick();
+        let dt_after = t.fixed_dt();
+        assert_eq!(dt_before, dt_after);
+    }
+
+    #[test]
+    fn tick_with_zero_elapsed_gives_zero_delta() {
+        let mut t = TimeState::new();
+        // Tick immediately — near-zero elapsed
+        t.tick();
+        assert!(t.delta_time() < 0.01, "delta {} too large", t.delta_time());
+        assert_eq!(t.frame_count(), 1);
+    }
+
+    #[test]
+    fn accumulator_feeds_from_tick() {
+        let mut t = TimeState::new();
+        // Set prev_instant far enough back to guarantee one fixed step
+        t.prev_instant = Instant::now() - Duration::from_millis(20);
+        t.tick();
+
+        // delta_time should be ~0.02, which is > FIXED_DT (1/60 ≈ 0.0167)
+        assert!(t.should_do_fixed_update());
+    }
 }

@@ -121,6 +121,43 @@ impl ApplicationHandler for App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_config_default_values() {
+        let config = WindowConfig::default();
+        assert_eq!(config.title, "Pac-Man 3D");
+        assert_eq!(config.width, 800);
+        assert_eq!(config.height, 600);
+    }
+
+    #[test]
+    fn window_config_custom_values() {
+        let config = WindowConfig {
+            title: "Test Window".to_string(),
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(config.title, "Test Window");
+        assert_eq!(config.width, 1920);
+        assert_eq!(config.height, 1080);
+    }
+
+    #[test]
+    fn window_config_zero_dimensions() {
+        let config = WindowConfig {
+            title: String::new(),
+            width: 0,
+            height: 0,
+        };
+        assert_eq!(config.width, 0);
+        assert_eq!(config.height, 0);
+        assert!(config.title.is_empty());
+    }
+}
+
 /// Run the window event loop with the given configuration.
 pub fn run(config: WindowConfig) {
     let event_loop = EventLoop::new().expect("failed to create event loop");
