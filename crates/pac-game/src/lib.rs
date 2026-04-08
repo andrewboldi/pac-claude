@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod collision;
 pub mod ghost;
+pub mod ghost_mode;
 pub mod maze;
 pub mod maze_renderer;
 pub mod pacman;
