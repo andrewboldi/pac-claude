@@ -28,7 +28,7 @@ impl Direction {
     /// Grid offset `(dx, dy)` for this direction.
     ///
     /// Up decreases row (y-1), down increases row (y+1).
-    pub fn delta(self) -> (i32, i32) {
+    pub(crate) fn delta(self) -> (i32, i32) {
         match self {
             Direction::Up => (0, -1),
             Direction::Down => (0, 1),

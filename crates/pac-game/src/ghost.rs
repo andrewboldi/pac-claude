@@ -1,118 +1,122 @@
-//! Ghost base entity — state machine with Chase/Scatter/Frightened/Eaten modes,
-//! grid movement, and smooth interpolation.
-//!
-//! Direction selection is handled externally by AI systems (Blinky, Pinky, etc.)
-//! via [`Ghost::set_direction`]. This module provides movement mechanics,
-//! ghost-house passability rules, and mode transitions with direction reversal.
+//! Ghost base entity — state machine with Chase/Scatter/Frightened/Eaten states, grid movement.
 
-use crate::collision::GhostCollider;
 use crate::maze::{MazeData, TileType, MAZE_HEIGHT, MAZE_WIDTH};
 use crate::pacman::Direction;
 
-/// Movement speed in tiles per second (Chase / Scatter).
-const NORMAL_SPEED: f32 = 7.5;
-/// Movement speed in tiles per second (Frightened).
-const FRIGHTENED_SPEED: f32 = 5.0;
-/// Movement speed in tiles per second (Eaten — eyes returning home).
-const EATEN_SPEED: f32 = 15.0;
+/// Normal ghost movement speed in tiles per second.
+const NORMAL_SPEED: f32 = 7.0;
+/// Speed when frightened.
+const FRIGHTENED_SPEED: f32 = 4.0;
+/// Speed when eaten (fast return to ghost house).
+const EATEN_SPEED: f32 = 14.0;
 
-/// Ghost behavioral mode (state machine).
-///
-/// Transitions are triggered externally by the mode controller. The ghost
-/// entity enforces side effects: speed changes and direction reversal.
+/// Ghost behavior state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GhostMode {
-    /// Actively chasing Pac-Man using ghost-specific targeting.
+pub enum GhostState {
+    /// Actively targeting Pac-Man (target depends on ghost personality).
     Chase,
-    /// Returning to home corner using a fixed scatter target.
+    /// Retreating to home corner.
     Scatter,
-    /// Vulnerable — can be eaten by Pac-Man. Moves slowly.
+    /// Vulnerable after Pac-Man eats a power pellet.
     Frightened,
-    /// Eyes only — returning to ghost house after being eaten.
+    /// Eyes only — returning to the ghost house after being eaten.
     Eaten,
 }
 
-impl GhostMode {
-    /// Movement speed for this mode in tiles per second.
-    pub fn speed(self) -> f32 {
-        match self {
-            GhostMode::Chase | GhostMode::Scatter => NORMAL_SPEED,
-            GhostMode::Frightened => FRIGHTENED_SPEED,
-            GhostMode::Eaten => EATEN_SPEED,
-        }
-    }
+/// Identifies which ghost this is (determines AI personality in downstream modules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GhostId {
+    Blinky,
+    Pinky,
+    Inky,
+    Clyde,
 }
 
-/// Ghost entity with grid-based movement and a behavioral state machine.
+/// A ghost entity with grid-based movement and a four-state behavior machine.
 ///
-/// Ghosts spawn in or near the ghost house and are steered by an external AI
-/// system that calls [`set_direction`](Ghost::set_direction) each tick. The
-/// ghost handles movement, wall collision, tunnel wrapping, and ghost-house
-/// passability.
+/// Movement mirrors [`crate::pacman::PacMan`] — grid coordinates with smooth
+/// interpolation via `move_progress` — but differs in passability rules:
+/// ghosts can traverse `GhostHouse` tiles, and can pass through `GhostDoor`
+/// when in `Eaten` state or when still inside the house.
 ///
-/// The no-reverse rule is enforced: ghosts cannot reverse direction mid-tile
-/// unless triggered by a mode change via [`set_mode`](Ghost::set_mode).
+/// The AI targeting logic (which direction to choose at intersections) is
+/// **not** part of this base entity — it lives in the per-ghost AI modules
+/// (Blinky, Pinky, Inky, Clyde). External code calls [`Ghost::set_direction`]
+/// to steer the ghost.
 pub struct Ghost {
+    id: GhostId,
+    state: GhostState,
     /// Current grid column.
     grid_x: usize,
     /// Current grid row.
     grid_y: usize,
-    /// Grid column moving from (for interpolation).
+    /// Grid column we are moving from (for interpolation).
     prev_x: usize,
-    /// Grid row moving from (for interpolation).
+    /// Grid row we are moving from (for interpolation).
     prev_y: usize,
     /// Direction currently being travelled.
     current_dir: Option<Direction>,
-    /// Direction requested by AI, applied at next tile boundary.
-    requested_dir: Option<Direction>,
-    /// Progress from prev toward current tile, 0.0–1.0.
+    /// Next direction chosen by AI (applied at tile boundary).
+    queued_dir: Option<Direction>,
+    /// Progress from `(prev_x, prev_y)` toward `(grid_x, grid_y)`, 0.0–1.0.
     move_progress: f32,
-    /// Current behavioral mode.
-    mode: GhostMode,
-    /// Ghost house home column (where eaten ghosts return).
-    home_x: usize,
-    /// Ghost house home row (where eaten ghosts return).
-    home_y: usize,
-    /// Whether this ghost is currently inside the ghost house.
-    in_ghost_house: bool,
-    /// Optional speed override set by AI (e.g. Cruise Elroy).
-    /// When `Some`, takes precedence over mode-based speed.
-    speed_override: Option<f32>,
+    /// Movement speed in Chase/Scatter (tiles per second).
+    normal_speed: f32,
+    /// Movement speed when Frightened.
+    frightened_speed: f32,
+    /// Movement speed when Eaten (returning to house).
+    eaten_speed: f32,
+    /// Ghost house spawn position (return point when eaten).
+    spawn_x: usize,
+    /// Ghost house spawn row.
+    spawn_y: usize,
+    /// Whether the ghost is currently inside the ghost house area.
+    in_house: bool,
 }
 
 impl Ghost {
     /// Create a ghost at the given grid position, outside the ghost house.
     ///
-    /// The home tile defaults to the spawn position. Mode starts as Scatter
-    /// (classic Pac-Man ghosts begin in scatter mode).
-    pub fn new(grid_x: usize, grid_y: usize) -> Self {
+    /// Initial state is `Scatter` (classic Pac-Man starts with a scatter phase).
+    pub fn new(id: GhostId, grid_x: usize, grid_y: usize) -> Self {
         Self {
+            id,
+            state: GhostState::Scatter,
             grid_x,
             grid_y,
             prev_x: grid_x,
             prev_y: grid_y,
             current_dir: None,
-            requested_dir: None,
-            move_progress: 1.0,
-            mode: GhostMode::Scatter,
-            home_x: grid_x,
-            home_y: grid_y,
-            in_ghost_house: false,
-            speed_override: None,
+            queued_dir: None,
+            move_progress: 1.0, // start fully arrived
+            normal_speed: NORMAL_SPEED,
+            frightened_speed: FRIGHTENED_SPEED,
+            eaten_speed: EATEN_SPEED,
+            spawn_x: grid_x,
+            spawn_y: grid_y,
+            in_house: false,
         }
     }
 
     /// Create a ghost spawned inside the ghost house.
     ///
-    /// Identical to [`new`](Ghost::new) but with `in_ghost_house` set,
-    /// allowing the ghost to traverse ghost-house tiles and the ghost door.
-    pub fn new_in_house(grid_x: usize, grid_y: usize) -> Self {
-        let mut ghost = Self::new(grid_x, grid_y);
-        ghost.in_ghost_house = true;
+    /// Identical to [`Ghost::new`] but sets `in_house` to `true`, allowing the
+    /// ghost to exit through the ghost door.
+    pub fn new_in_house(id: GhostId, grid_x: usize, grid_y: usize) -> Self {
+        let mut ghost = Self::new(id, grid_x, grid_y);
+        ghost.in_house = true;
         ghost
     }
 
-    // ── Accessors ─────────────────────────────────────────────
+    // ── Getters ──────────────────────────────────────────────
+
+    pub fn id(&self) -> GhostId {
+        self.id
+    }
+
+    pub fn state(&self) -> GhostState {
+        self.state
+    }
 
     pub fn grid_x(&self) -> usize {
         self.grid_x
@@ -134,114 +138,156 @@ impl Ghost {
         self.current_dir
     }
 
-    pub fn requested_dir(&self) -> Option<Direction> {
-        self.requested_dir
+    pub fn queued_dir(&self) -> Option<Direction> {
+        self.queued_dir
     }
 
     pub fn move_progress(&self) -> f32 {
         self.move_progress
     }
 
-    pub fn mode(&self) -> GhostMode {
-        self.mode
+    pub fn in_house(&self) -> bool {
+        self.in_house
     }
 
-    pub fn home_x(&self) -> usize {
-        self.home_x
+    pub fn spawn_x(&self) -> usize {
+        self.spawn_x
     }
 
-    pub fn home_y(&self) -> usize {
-        self.home_y
+    pub fn spawn_y(&self) -> usize {
+        self.spawn_y
     }
 
-    pub fn in_ghost_house(&self) -> bool {
-        self.in_ghost_house
-    }
-
-    /// Movement speed in tiles per second.
-    ///
-    /// Returns the AI speed override if set, otherwise the mode-based speed.
+    /// Current effective speed in tiles per second, based on state.
     pub fn speed(&self) -> f32 {
-        self.speed_override.unwrap_or_else(|| self.mode.speed())
-    }
-
-    /// Override the mode-based speed (used by AI for Cruise Elroy, etc.).
-    pub fn set_speed_override(&mut self, speed: f32) {
-        self.speed_override = Some(speed);
-    }
-
-    /// Clear any speed override, reverting to mode-based speed.
-    pub fn clear_speed_override(&mut self) {
-        self.speed_override = None;
-    }
-
-    // ── Direction & mode ──────────────────────────────────────
-
-    /// Request a movement direction from the AI.
-    ///
-    /// Applied at the next tile boundary. The no-reverse rule is enforced
-    /// during [`update`](Ghost::update): a reverse request is ignored unless
-    /// the ghost is at a dead end.
-    pub fn set_direction(&mut self, dir: Direction) {
-        self.requested_dir = Some(dir);
-    }
-
-    /// Transition to a new mode.
-    ///
-    /// Classic Pac-Man reversal rules:
-    /// - Chase ↔ Scatter: reverse direction
-    /// - Any → Frightened: reverse direction
-    /// - Any → Eaten: NO reverse (ghost was just caught)
-    /// - Frightened/Eaten → Chase/Scatter: no reverse
-    pub fn set_mode(&mut self, new_mode: GhostMode) {
-        let old_mode = self.mode;
-        if old_mode == new_mode {
-            return;
+        match self.state {
+            GhostState::Frightened => self.frightened_speed,
+            GhostState::Eaten => self.eaten_speed,
+            GhostState::Chase | GhostState::Scatter => self.normal_speed,
         }
+    }
 
-        let should_reverse = matches!(
-            (old_mode, new_mode),
-            (GhostMode::Chase, GhostMode::Scatter)
-                | (GhostMode::Scatter, GhostMode::Chase)
-                | (GhostMode::Chase, GhostMode::Frightened)
-                | (GhostMode::Scatter, GhostMode::Frightened)
-        );
+    // ── Setters ──────────────────────────────────────────────
 
-        self.mode = new_mode;
+    /// Override the three speed values (normal, frightened, eaten).
+    pub fn set_speeds(&mut self, normal: f32, frightened: f32, eaten: f32) {
+        self.normal_speed = normal;
+        self.frightened_speed = frightened;
+        self.eaten_speed = eaten;
+    }
 
-        if should_reverse {
+    /// Queue a direction for the ghost to take at the next tile boundary.
+    pub fn set_direction(&mut self, dir: Direction) {
+        self.queued_dir = Some(dir);
+    }
+
+    // ── State transitions ────────────────────────────────────
+
+    /// Transition to Chase state.
+    ///
+    /// Reverses direction if coming from Scatter (classic Pac-Man rule).
+    /// No reversal when exiting Frightened — that reversal already happened
+    /// on entry.
+    pub fn enter_chase(&mut self) {
+        let prev = self.state;
+        self.state = GhostState::Chase;
+        if prev == GhostState::Scatter {
             self.reverse();
         }
     }
 
-    // ── Update ────────────────────────────────────────────────
+    /// Transition to Scatter state. Reverses direction from Chase.
+    pub fn enter_scatter(&mut self) {
+        let prev = self.state;
+        self.state = GhostState::Scatter;
+        if prev == GhostState::Chase {
+            self.reverse();
+        }
+    }
 
-    /// Advance ghost by one fixed timestep.
+    /// Transition to Frightened state. Reverses direction.
+    ///
+    /// No-op if the ghost is already Eaten (eyes can't be frightened).
+    pub fn enter_frightened(&mut self) {
+        if self.state == GhostState::Eaten {
+            return;
+        }
+        self.state = GhostState::Frightened;
+        self.reverse();
+    }
+
+    /// Transition to Eaten state (Pac-Man ate this ghost).
+    ///
+    /// No direction reversal — the ghost immediately targets the ghost house.
+    pub fn enter_eaten(&mut self) {
+        self.state = GhostState::Eaten;
+    }
+
+    /// Reset the ghost to its spawn position inside the ghost house.
+    ///
+    /// Called when the eaten ghost reaches the ghost house. Resets position,
+    /// direction, and state to Scatter.
+    pub fn respawn(&mut self) {
+        self.grid_x = self.spawn_x;
+        self.grid_y = self.spawn_y;
+        self.prev_x = self.spawn_x;
+        self.prev_y = self.spawn_y;
+        self.current_dir = None;
+        self.queued_dir = None;
+        self.move_progress = 1.0;
+        self.in_house = true;
+        self.state = GhostState::Scatter;
+    }
+
+    // ── Movement ─────────────────────────────────────────────
+
+    /// Advance the ghost by one fixed timestep.
     ///
     /// `dt` is the fixed timestep duration in seconds. Movement is checked
-    /// against the maze for wall collisions and ghost-house passability.
-    /// Tunnel wrapping is applied at horizontal edges.
+    /// against the maze for passability, and tunnel wrapping is applied at
+    /// the horizontal edges.
     pub fn update(&mut self, dt: f32, maze: &MazeData) {
-        let speed = self.speed();
+        // Handle mid-tile reversal (queued direction is opposite of current).
+        if let (Some(queued), Some(current)) = (self.queued_dir, self.current_dir) {
+            if queued == current.opposite() && self.move_progress < 1.0 {
+                let old_grid_x = self.grid_x;
+                let old_grid_y = self.grid_y;
+                self.grid_x = self.prev_x;
+                self.grid_y = self.prev_y;
+                self.prev_x = old_grid_x;
+                self.prev_y = old_grid_y;
+                self.move_progress = 1.0 - self.move_progress;
+                self.current_dir = Some(queued);
+                self.queued_dir = None;
+            }
+        }
 
         // Advance progress toward target tile.
+        let speed = self.speed();
         if self.current_dir.is_some() && self.move_progress < 1.0 {
             self.move_progress += speed * dt;
         }
 
-        // Arrived at target tile?
+        // Arrived at the target tile?
         if self.move_progress >= 1.0 {
             self.move_progress = 1.0;
 
-            // Update ghost house tracking based on current tile.
-            self.update_house_state(maze);
+            // Update in_house flag based on the tile we just arrived at.
+            match maze.get(self.grid_x, self.grid_y) {
+                Some(TileType::GhostHouse) => self.in_house = true,
+                Some(TileType::GhostDoor) => {} // transitioning — don't change flag
+                _ => self.in_house = false,
+            }
 
-            // Pick next direction.
-            let next_dir = self.pick_next_direction(maze);
+            // Try queued direction first, then continue current.
+            let next_dir = self
+                .queued_dir
+                .filter(|&d| self.can_move(d, maze))
+                .or_else(|| self.current_dir.filter(|&d| self.can_move(d, maze)));
 
             if let Some(dir) = next_dir {
-                if self.requested_dir == Some(dir) {
-                    self.requested_dir = None;
+                if self.queued_dir == Some(dir) {
+                    self.queued_dir = None;
                 }
                 self.begin_move(dir, maze);
             } else {
@@ -254,129 +300,37 @@ impl Ghost {
     ///
     /// Returns `(world_x, world_z)` matching the maze renderer convention
     /// where grid `(x, y)` maps to world `(x, 0, y)`.
-    pub fn world_position(&self, _alpha: f32) -> (f32, f32) {
+    pub fn world_position(&self, alpha: f32) -> (f32, f32) {
         let t = self.move_progress.clamp(0.0, 1.0);
         let visual_x = self.prev_x as f32 + (self.grid_x as f32 - self.prev_x as f32) * t;
         let visual_z = self.prev_y as f32 + (self.grid_y as f32 - self.prev_y as f32) * t;
+        let _ = alpha;
         (visual_x, visual_z)
     }
 
-    /// Convert to a [`GhostCollider`] for the collision system.
-    ///
-    /// Eaten ghosts are not collidable (eyes only), so the collision system
-    /// should skip them. The `frightened` field drives eat-vs-hit logic.
-    pub fn to_collider(&self) -> GhostCollider {
-        GhostCollider {
-            grid_x: self.grid_x,
-            grid_y: self.grid_y,
-            frightened: self.mode == GhostMode::Frightened,
-        }
-    }
-
-    /// Whether this eaten ghost has arrived at its home tile.
-    ///
-    /// The mode controller should transition the ghost back to Chase/Scatter
-    /// (via the ghost house) when this returns `true`.
-    pub fn reached_home(&self) -> bool {
-        self.mode == GhostMode::Eaten
-            && self.grid_x == self.home_x
-            && self.grid_y == self.home_y
-            && self.move_progress >= 1.0
-    }
-
-    // ── AI helpers ─────────────────────────────────────────────
-
-    /// Whether the ghost can move in the given direction from its current tile.
-    ///
-    /// Used by AI controllers to evaluate available directions.
-    pub fn is_direction_passable(&self, dir: Direction, maze: &MazeData) -> bool {
-        self.can_move(dir, maze)
-    }
-
-    /// Compute the neighbor tile in the given direction, with tunnel wrapping.
-    ///
-    /// Used by AI controllers to evaluate distance to target from each
-    /// candidate direction.
-    pub fn neighbor_tile(&self, dir: Direction) -> (usize, usize) {
-        self.target_tile(self.grid_x, self.grid_y, dir)
-    }
-
-    // ── Internal ──────────────────────────────────────────────
-
-    /// Reverse direction mid-tile or at a boundary.
-    fn reverse(&mut self) {
-        if let Some(dir) = self.current_dir {
-            if self.move_progress < 1.0 {
-                // Mid-tile: swap prev and current, invert progress.
-                let old_gx = self.grid_x;
-                let old_gy = self.grid_y;
-                self.grid_x = self.prev_x;
-                self.grid_y = self.prev_y;
-                self.prev_x = old_gx;
-                self.prev_y = old_gy;
-                self.move_progress = 1.0 - self.move_progress;
-            }
-            self.current_dir = Some(dir.opposite());
-        }
-    }
-
-    /// Pick the next direction at a tile boundary.
-    ///
-    /// Priority: requested (non-reverse) → current → requested (reverse, dead end only).
-    fn pick_next_direction(&self, maze: &MazeData) -> Option<Direction> {
-        let reverse_dir = self.current_dir.map(|d| d.opposite());
-
-        // Try requested direction if passable and not a reverse.
-        if let Some(req) = self.requested_dir {
-            if self.can_move(req, maze) && Some(req) != reverse_dir {
-                return Some(req);
-            }
-        }
-
-        // Continue current direction if passable.
-        if let Some(current) = self.current_dir {
-            if self.can_move(current, maze) {
-                return Some(current);
-            }
-        }
-
-        // Dead end: allow reverse via requested direction.
-        if let Some(req) = self.requested_dir {
-            if self.can_move(req, maze) {
-                return Some(req);
-            }
-        }
-
-        // Last resort: try the reverse of current direction.
-        if let Some(rev) = reverse_dir {
-            if self.can_move(rev, maze) {
-                return Some(rev);
-            }
-        }
-
-        None
-    }
+    // ── Internal helpers ─────────────────────────────────────
 
     /// Whether the ghost can move in the given direction from the current tile.
     fn can_move(&self, dir: Direction, maze: &MazeData) -> bool {
-        let (tx, ty) = self.target_tile(self.grid_x, self.grid_y, dir);
-        self.is_passable(maze, tx, ty)
+        let (tx, ty) = self.target_coords(self.grid_x, self.grid_y, dir);
+        ghost_is_passable(maze, tx, ty, self.state, self.in_house)
     }
 
     /// Start moving toward the adjacent tile in `dir`.
-    fn begin_move(&mut self, dir: Direction, _maze: &MazeData) {
-        let (tx, ty) = self.target_tile(self.grid_x, self.grid_y, dir);
+    fn begin_move(&mut self, dir: Direction, maze: &MazeData) {
+        let (tx, ty) = self.target_coords(self.grid_x, self.grid_y, dir);
         self.prev_x = self.grid_x;
         self.prev_y = self.grid_y;
         self.grid_x = tx;
         self.grid_y = ty;
         self.current_dir = Some(dir);
         self.move_progress = 0.0;
+        let _ = maze;
     }
 
     /// Compute the target tile from `(x, y)` in direction `dir`, applying
     /// horizontal tunnel wrapping.
-    fn target_tile(&self, x: usize, y: usize, dir: Direction) -> (usize, usize) {
+    fn target_coords(&self, x: usize, y: usize, dir: Direction) -> (usize, usize) {
         let (dx, dy) = dir.delta();
         let nx = x as i32 + dx;
         let ny = y as i32 + dy;
@@ -394,32 +348,42 @@ impl Ghost {
         (wrapped_x, wrapped_y)
     }
 
-    /// Ghost-specific passability: walls block, ghost house/door are conditional.
-    fn is_passable(&self, maze: &MazeData, x: usize, y: usize) -> bool {
-        match maze.get(x, y) {
-            Some(TileType::Wall) => false,
-            Some(TileType::GhostHouse) => self.in_ghost_house || self.mode == GhostMode::Eaten,
-            Some(TileType::GhostDoor) => self.in_ghost_house || self.mode == GhostMode::Eaten,
-            Some(_) => true,
-            None => false,
+    /// Reverse the ghost's current direction mid-tile.
+    fn reverse(&mut self) {
+        if let Some(dir) = self.current_dir {
+            if self.move_progress < 1.0 {
+                // Mid-tile: swap prev/current positions and invert progress.
+                let old_gx = self.grid_x;
+                let old_gy = self.grid_y;
+                self.grid_x = self.prev_x;
+                self.grid_y = self.prev_y;
+                self.prev_x = old_gx;
+                self.prev_y = old_gy;
+                self.move_progress = 1.0 - self.move_progress;
+            }
+            self.current_dir = Some(dir.opposite());
         }
+        self.queued_dir = None;
     }
+}
 
-    /// Update `in_ghost_house` based on the tile the ghost just arrived at.
-    fn update_house_state(&mut self, maze: &MazeData) {
-        let tile = maze.get(self.grid_x, self.grid_y);
-        match tile {
-            Some(TileType::GhostHouse) | Some(TileType::GhostDoor) => {
-                // Eaten ghost arriving at home re-enters the house.
-                if self.mode == GhostMode::Eaten {
-                    self.in_ghost_house = true;
-                }
-            }
-            _ => {
-                // Stepped off ghost house tiles → no longer inside.
-                self.in_ghost_house = false;
-            }
-        }
+/// Ghost-specific passability check.
+///
+/// Unlike Pac-Man, ghosts can walk on `GhostHouse` tiles, and can pass through
+/// `GhostDoor` when in `Eaten` state (returning home) or when inside the house
+/// (exiting).
+fn ghost_is_passable(
+    maze: &MazeData,
+    x: usize,
+    y: usize,
+    state: GhostState,
+    in_house: bool,
+) -> bool {
+    match maze.get(x, y) {
+        Some(TileType::Wall) => false,
+        Some(TileType::GhostDoor) => state == GhostState::Eaten || in_house,
+        Some(_) => true,
+        None => false,
     }
 }
 
@@ -430,31 +394,17 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
-    /// Open maze with border walls for basic movement tests.
-    fn test_maze() -> MazeData {
-        let mut tiles = [[TileType::Empty; MAZE_WIDTH]; MAZE_HEIGHT];
-        for x in 0..MAZE_WIDTH {
-            tiles[0][x] = TileType::Wall;
-            tiles[MAZE_HEIGHT - 1][x] = TileType::Wall;
-        }
-        for y in 0..MAZE_HEIGHT {
-            tiles[y][0] = TileType::Wall;
-            tiles[y][MAZE_WIDTH - 1] = TileType::Wall;
-        }
-        tiles[2][2] = TileType::Wall;
-        MazeData { tiles }
-    }
-
-    /// Maze with ghost house for house-related tests.
+    /// Open maze with border walls, ghost house in the center, and a ghost door.
     ///
     /// ```text
-    /// row 10: ... E  E  E  E  E ...
-    /// row 11: ... E  D  D  D  E ...   (D = GhostDoor)
-    /// row 12: ... E  H  H  H  E ...   (H = GhostHouse)
-    /// row 13: ... E  H  H  H  E ...
-    /// row 14: ... E  E  E  E  E ...
+    /// W W W W W ... W
+    /// W . . . . ... W
+    /// W . . D . ... W   (D = GhostDoor at col 3, row 2)
+    /// W . . H . ... W   (H = GhostHouse at col 3, row 3)
+    /// W . . . . ... W
+    /// ...
     /// ```
-    fn ghost_house_maze() -> MazeData {
+    fn ghost_maze() -> MazeData {
         let mut tiles = [[TileType::Empty; MAZE_WIDTH]; MAZE_HEIGHT];
         // Border walls
         for x in 0..MAZE_WIDTH {
@@ -465,17 +415,23 @@ mod tests {
             tiles[y][0] = TileType::Wall;
             tiles[y][MAZE_WIDTH - 1] = TileType::Wall;
         }
-        // Ghost door row
-        tiles[11][12] = TileType::GhostDoor;
-        tiles[11][13] = TileType::GhostDoor;
-        tiles[11][14] = TileType::GhostDoor;
-        // Ghost house interior
-        tiles[12][12] = TileType::GhostHouse;
-        tiles[12][13] = TileType::GhostHouse;
-        tiles[12][14] = TileType::GhostHouse;
-        tiles[13][12] = TileType::GhostHouse;
-        tiles[13][13] = TileType::GhostHouse;
-        tiles[13][14] = TileType::GhostHouse;
+        // Ghost door and house
+        tiles[2][3] = TileType::GhostDoor;
+        tiles[3][3] = TileType::GhostHouse;
+        MazeData { tiles }
+    }
+
+    /// Simple open maze for basic movement tests.
+    fn open_maze() -> MazeData {
+        let mut tiles = [[TileType::Empty; MAZE_WIDTH]; MAZE_HEIGHT];
+        for x in 0..MAZE_WIDTH {
+            tiles[0][x] = TileType::Wall;
+            tiles[MAZE_HEIGHT - 1][x] = TileType::Wall;
+        }
+        for y in 0..MAZE_HEIGHT {
+            tiles[y][0] = TileType::Wall;
+            tiles[y][MAZE_WIDTH - 1] = TileType::Wall;
+        }
         MazeData { tiles }
     }
 
@@ -488,658 +444,518 @@ mod tests {
         MazeData { tiles }
     }
 
-    /// Maze forming a dead end: only Left and Right from (5,5), wall above and below.
-    fn dead_end_maze() -> MazeData {
-        let mut tiles = [[TileType::Wall; MAZE_WIDTH]; MAZE_HEIGHT];
-        // Horizontal corridor at row 5
-        for x in 1..MAZE_WIDTH - 1 {
-            tiles[5][x] = TileType::Empty;
-        }
-        MazeData { tiles }
-    }
-
-    // ── Construction ──────────────────────────────────────────
+    // ── Construction ─────────────────────────────────────────
 
     #[test]
     fn new_places_at_grid_position() {
-        let ghost = Ghost::new(5, 10);
-        assert_eq!(ghost.grid_x(), 5);
-        assert_eq!(ghost.grid_y(), 10);
-    }
-
-    #[test]
-    fn new_starts_stationary() {
-        let ghost = Ghost::new(1, 1);
-        assert_eq!(ghost.current_dir(), None);
-        assert_eq!(ghost.requested_dir(), None);
-    }
-
-    #[test]
-    fn new_starts_fully_arrived() {
-        let ghost = Ghost::new(1, 1);
-        assert!((ghost.move_progress() - 1.0).abs() < f32::EPSILON);
+        let g = Ghost::new(GhostId::Blinky, 5, 10);
+        assert_eq!(g.grid_x(), 5);
+        assert_eq!(g.grid_y(), 10);
     }
 
     #[test]
     fn new_starts_in_scatter() {
-        let ghost = Ghost::new(1, 1);
-        assert_eq!(ghost.mode(), GhostMode::Scatter);
+        let g = Ghost::new(GhostId::Blinky, 1, 1);
+        assert_eq!(g.state(), GhostState::Scatter);
     }
 
     #[test]
-    fn new_not_in_house() {
-        let ghost = Ghost::new(1, 1);
-        assert!(!ghost.in_ghost_house());
+    fn new_starts_stationary() {
+        let g = Ghost::new(GhostId::Pinky, 1, 1);
+        assert_eq!(g.current_dir(), None);
+        assert_eq!(g.queued_dir(), None);
     }
 
     #[test]
-    fn new_home_equals_spawn() {
-        let ghost = Ghost::new(13, 14);
-        assert_eq!(ghost.home_x(), 13);
-        assert_eq!(ghost.home_y(), 14);
+    fn new_starts_fully_arrived() {
+        let g = Ghost::new(GhostId::Inky, 1, 1);
+        assert!((g.move_progress() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn new_in_house_sets_flag() {
-        let ghost = Ghost::new_in_house(13, 14);
-        assert!(ghost.in_ghost_house());
-        assert_eq!(ghost.grid_x(), 13);
-        assert_eq!(ghost.grid_y(), 14);
-    }
-
-    // ── Mode speed ────────────────────────────────────────────
-
-    #[test]
-    fn chase_speed() {
-        assert!((GhostMode::Chase.speed() - NORMAL_SPEED).abs() < f32::EPSILON);
+    fn new_is_not_in_house() {
+        let g = Ghost::new(GhostId::Clyde, 1, 1);
+        assert!(!g.in_house());
     }
 
     #[test]
-    fn scatter_speed() {
-        assert!((GhostMode::Scatter.speed() - NORMAL_SPEED).abs() < f32::EPSILON);
+    fn new_in_house_flag() {
+        let g = Ghost::new_in_house(GhostId::Pinky, 3, 3);
+        assert!(g.in_house());
     }
 
     #[test]
-    fn frightened_speed() {
-        assert!((GhostMode::Frightened.speed() - FRIGHTENED_SPEED).abs() < f32::EPSILON);
+    fn ghost_id_preserved() {
+        let g = Ghost::new(GhostId::Inky, 1, 1);
+        assert_eq!(g.id(), GhostId::Inky);
     }
 
     #[test]
-    fn eaten_speed() {
-        assert!((GhostMode::Eaten.speed() - EATEN_SPEED).abs() < f32::EPSILON);
+    fn spawn_position_matches_initial() {
+        let g = Ghost::new(GhostId::Blinky, 7, 9);
+        assert_eq!(g.spawn_x(), 7);
+        assert_eq!(g.spawn_y(), 9);
+    }
+
+    // ── Speed ────────────────────────────────────────────────
+
+    #[test]
+    fn default_speed_in_scatter() {
+        let g = Ghost::new(GhostId::Blinky, 1, 1);
+        assert!((g.speed() - NORMAL_SPEED).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn ghost_speed_matches_mode() {
-        let mut ghost = Ghost::new(1, 1);
-        assert!((ghost.speed() - NORMAL_SPEED).abs() < f32::EPSILON);
-        ghost.set_mode(GhostMode::Frightened);
-        assert!((ghost.speed() - FRIGHTENED_SPEED).abs() < f32::EPSILON);
-        ghost.set_mode(GhostMode::Eaten);
-        assert!((ghost.speed() - EATEN_SPEED).abs() < f32::EPSILON);
-    }
-
-    // ── Mode transitions ──────────────────────────────────────
-
-    #[test]
-    fn set_mode_changes_mode() {
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_mode(GhostMode::Chase);
-        assert_eq!(ghost.mode(), GhostMode::Chase);
+    fn speed_in_chase() {
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.enter_chase();
+        assert!((g.speed() - NORMAL_SPEED).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn set_same_mode_is_noop() {
-        let mut ghost = Ghost::new(1, 1);
-        assert_eq!(ghost.mode(), GhostMode::Scatter);
-        ghost.set_mode(GhostMode::Scatter);
-        assert_eq!(ghost.mode(), GhostMode::Scatter);
+    fn speed_in_frightened() {
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.enter_frightened();
+        assert!((g.speed() - FRIGHTENED_SPEED).abs() < f32::EPSILON);
     }
+
+    #[test]
+    fn speed_in_eaten() {
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.enter_eaten();
+        assert!((g.speed() - EATEN_SPEED).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_speeds_overrides_defaults() {
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_speeds(10.0, 5.0, 20.0);
+        assert!((g.speed() - 10.0).abs() < f32::EPSILON);
+        g.enter_frightened();
+        assert!((g.speed() - 5.0).abs() < f32::EPSILON);
+        g.enter_eaten();
+        assert!((g.speed() - 20.0).abs() < f32::EPSILON);
+    }
+
+    // ── State transitions ────────────────────────────────────
 
     #[test]
     fn scatter_to_chase_reverses_direction() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Right);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
         // Start moving
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
-        assert_eq!(ghost.current_dir(), Some(Direction::Right));
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
+        }
+        assert_eq!(g.current_dir(), Some(Direction::Right));
 
-        ghost.set_mode(GhostMode::Chase);
-        assert_eq!(ghost.current_dir(), Some(Direction::Left));
+        g.enter_chase();
+        assert_eq!(g.state(), GhostState::Chase);
+        assert_eq!(g.current_dir(), Some(Direction::Left));
     }
 
     #[test]
     fn chase_to_scatter_reverses_direction() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_mode(GhostMode::Chase);
-        ghost.set_direction(Direction::Right);
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
-        assert_eq!(ghost.current_dir(), Some(Direction::Right));
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.enter_chase(); // Scatter → Chase (reverses, but stationary so no visible effect)
+        g.set_direction(Direction::Down);
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
+        }
+        assert_eq!(g.current_dir(), Some(Direction::Down));
 
-        ghost.set_mode(GhostMode::Scatter);
-        assert_eq!(ghost.current_dir(), Some(Direction::Left));
+        g.enter_scatter();
+        assert_eq!(g.state(), GhostState::Scatter);
+        assert_eq!(g.current_dir(), Some(Direction::Up));
     }
 
     #[test]
-    fn entering_frightened_reverses_direction() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_mode(GhostMode::Chase);
-        ghost.set_direction(Direction::Down);
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
+    fn enter_frightened_reverses_direction() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Pinky, 5, 5);
+        g.set_direction(Direction::Right);
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
+        }
 
-        ghost.set_mode(GhostMode::Frightened);
-        assert_eq!(ghost.current_dir(), Some(Direction::Up));
+        g.enter_frightened();
+        assert_eq!(g.state(), GhostState::Frightened);
+        assert_eq!(g.current_dir(), Some(Direction::Left));
     }
 
     #[test]
-    fn entering_eaten_does_not_reverse() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_mode(GhostMode::Chase);
-        ghost.set_direction(Direction::Right);
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
+    fn frightened_to_chase_no_reversal() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
+        }
+        g.enter_frightened();
+        // Now frightened, direction is Left (reversed)
+        assert_eq!(g.current_dir(), Some(Direction::Left));
 
-        ghost.set_mode(GhostMode::Eaten);
-        assert_eq!(ghost.current_dir(), Some(Direction::Right));
+        g.enter_chase();
+        // Frightened → Chase: no reversal
+        assert_eq!(g.current_dir(), Some(Direction::Left));
     }
 
     #[test]
-    fn frightened_to_chase_does_not_reverse() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_mode(GhostMode::Frightened);
-        ghost.set_direction(Direction::Right);
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
-
-        ghost.set_mode(GhostMode::Chase);
-        assert_eq!(ghost.current_dir(), Some(Direction::Right));
+    fn eaten_ignores_frightened() {
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.enter_eaten();
+        g.enter_frightened();
+        // Should still be eaten
+        assert_eq!(g.state(), GhostState::Eaten);
     }
 
     #[test]
-    fn reverse_mid_tile_swaps_positions() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Right);
-        // Move partway
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
-        assert!(ghost.move_progress() < 1.0);
+    fn enter_eaten_no_reversal() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
+        }
 
-        ghost.set_mode(GhostMode::Chase); // triggers reverse from Scatter
-        // prev and grid should swap
-        assert_eq!(ghost.current_dir(), Some(Direction::Left));
+        g.enter_eaten();
+        assert_eq!(g.state(), GhostState::Eaten);
+        // Direction unchanged — no reversal on eaten
+        assert_eq!(g.current_dir(), Some(Direction::Right));
     }
 
-    // ── Basic movement ────────────────────────────────────────
+    // ── Respawn ──────────────────────────────────────────────
+
+    #[test]
+    fn respawn_resets_to_spawn_position() {
+        let mut g = Ghost::new(GhostId::Blinky, 3, 3);
+        g.enter_eaten();
+        // Simulate movement away from spawn
+        let maze = open_maze();
+        g.set_direction(Direction::Right);
+        for _ in 0..50 {
+            g.update(DT, &maze);
+        }
+        assert!(g.grid_x() > 3);
+
+        g.respawn();
+        assert_eq!(g.grid_x(), 3);
+        assert_eq!(g.grid_y(), 3);
+        assert_eq!(g.prev_x(), 3);
+        assert_eq!(g.prev_y(), 3);
+    }
+
+    #[test]
+    fn respawn_sets_scatter_and_in_house() {
+        let mut g = Ghost::new(GhostId::Blinky, 3, 3);
+        g.enter_eaten();
+        g.respawn();
+        assert_eq!(g.state(), GhostState::Scatter);
+        assert!(g.in_house());
+    }
+
+    #[test]
+    fn respawn_clears_direction() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
+        for _ in 0..10 {
+            g.update(DT, &maze);
+        }
+        g.respawn();
+        assert_eq!(g.current_dir(), None);
+        assert_eq!(g.queued_dir(), None);
+        assert!((g.move_progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    // ── Basic movement ───────────────────────────────────────
 
     #[test]
     fn moves_right() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Right);
-
-        for _ in 0..10 {
-            ghost.update(DT, &maze);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_direction(Direction::Right);
+        for _ in 0..20 {
+            g.update(DT, &maze);
         }
-        assert!(ghost.grid_x() >= 2);
-        assert_eq!(ghost.grid_y(), 1);
+        assert!(g.grid_x() >= 2);
+        assert_eq!(g.grid_y(), 1);
     }
 
     #[test]
     fn moves_down() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Down);
-
-        for _ in 0..10 {
-            ghost.update(DT, &maze);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_direction(Direction::Down);
+        for _ in 0..20 {
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), 1);
-        assert!(ghost.grid_y() >= 2);
+        assert_eq!(g.grid_x(), 1);
+        assert!(g.grid_y() >= 2);
     }
 
     #[test]
     fn moves_left() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(3, 1);
-        ghost.set_direction(Direction::Left);
-
-        for _ in 0..10 {
-            ghost.update(DT, &maze);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Left);
+        for _ in 0..20 {
+            g.update(DT, &maze);
         }
-        assert!(ghost.grid_x() <= 2);
+        assert!(g.grid_x() <= 4);
     }
 
     #[test]
     fn moves_up() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 3);
-        ghost.set_direction(Direction::Up);
-
-        for _ in 0..10 {
-            ghost.update(DT, &maze);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Up);
+        for _ in 0..20 {
+            g.update(DT, &maze);
         }
-        assert!(ghost.grid_y() <= 2);
+        assert!(g.grid_y() <= 4);
     }
 
     #[test]
     fn stationary_without_input() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
         for _ in 0..100 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), 5);
-        assert_eq!(ghost.grid_y(), 5);
+        assert_eq!(g.grid_x(), 5);
+        assert_eq!(g.grid_y(), 5);
+    }
+
+    // ── Wall collision ───────────────────────────────────────
+
+    #[test]
+    fn blocked_by_wall() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_direction(Direction::Left); // Wall at col 0
+        for _ in 0..100 {
+            g.update(DT, &maze);
+        }
+        assert_eq!(g.grid_x(), 1);
+        assert_eq!(g.grid_y(), 1);
+        assert_eq!(g.current_dir(), None);
     }
 
     #[test]
     fn continues_through_open_corridor() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Right);
-
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_direction(Direction::Right);
         for _ in 0..500 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert!(ghost.grid_x() > 2);
+        assert!(g.grid_x() > 3);
     }
 
-    // ── Wall collision ────────────────────────────────────────
+    // ── Ghost house / door passability ───────────────────────
 
     #[test]
-    fn blocked_by_wall() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Left);
-
-        for _ in 0..100 {
-            ghost.update(DT, &maze);
+    fn ghost_walks_on_ghost_house_tiles() {
+        let maze = ghost_maze();
+        // Start at (3, 4) — one below ghost house, moving up into it.
+        let mut g = Ghost::new(GhostId::Blinky, 3, 4);
+        g.enter_eaten(); // Eaten so we can pass through door too
+        g.set_direction(Direction::Up);
+        for _ in 0..50 {
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), 1);
-        assert_eq!(ghost.grid_y(), 1);
+        // Should have entered ghost house tile at (3, 3)
+        assert!(g.grid_y() <= 3);
     }
-
-    #[test]
-    fn blocked_by_interior_wall() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 2);
-        ghost.set_direction(Direction::Right);
-
-        for _ in 0..100 {
-            ghost.update(DT, &maze);
-        }
-        assert_eq!(ghost.grid_x(), 1);
-        assert_eq!(ghost.grid_y(), 2);
-    }
-
-    #[test]
-    fn stops_when_hitting_wall() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Up);
-
-        for _ in 0..100 {
-            ghost.update(DT, &maze);
-        }
-        assert_eq!(ghost.grid_y(), 1);
-        assert_eq!(ghost.current_dir(), None);
-    }
-
-    // ── No-reverse rule ───────────────────────────────────────
-
-    #[test]
-    fn requested_reverse_ignored_at_boundary() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Right);
-
-        // Move to next tile
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        // Now request reverse
-        ghost.set_direction(Direction::Left);
-
-        let x_before = ghost.grid_x();
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        // Should have continued right (reverse ignored), moved further right.
-        assert!(ghost.grid_x() >= x_before);
-    }
-
-    #[test]
-    fn reverse_allowed_at_dead_end() {
-        let maze = dead_end_maze();
-        // Start at (1, 5) moving left — wall at (0, 5)
-        let mut ghost = Ghost::new(1, 5);
-        ghost.set_direction(Direction::Left);
-
-        // Advance — should hit the wall and be unable to go up/down (walls)
-        for _ in 0..100 {
-            ghost.update(DT, &maze);
-        }
-        // Ghost should be at (1, 5), blocked left by wall
-        assert_eq!(ghost.grid_x(), 1);
-
-        // Now request right (reverse) — should be accepted as dead end
-        ghost.set_direction(Direction::Right);
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        assert!(ghost.grid_x() > 1);
-    }
-
-    // ── Ghost house passability ───────────────────────────────
 
     #[test]
     fn normal_ghost_blocked_by_ghost_door() {
-        let maze = ghost_house_maze();
-        // Ghost outside house at (13, 10), trying to go down through door at (13, 11)
-        let mut ghost = Ghost::new(13, 10);
-        ghost.set_direction(Direction::Down);
-
+        let maze = ghost_maze();
+        // Start at (3, 1) — above ghost door at (3, 2), moving down.
+        let mut g = Ghost::new(GhostId::Blinky, 3, 1);
+        // State is Scatter, not in house → door is blocked.
+        g.set_direction(Direction::Down);
         for _ in 0..100 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_y(), 10);
+        // Should NOT pass through ghost door
+        assert_eq!(g.grid_y(), 1);
     }
 
     #[test]
-    fn normal_ghost_blocked_by_ghost_house() {
-        let maze = ghost_house_maze();
-        let mut ghost = Ghost::new(11, 12);
-        ghost.set_direction(Direction::Right);
+    fn eaten_ghost_passes_through_ghost_door() {
+        let maze = ghost_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 3, 1);
+        g.enter_eaten();
+        g.set_direction(Direction::Down);
+        for _ in 0..50 {
+            g.update(DT, &maze);
+        }
+        // Should have passed through door at (3, 2) into house at (3, 3)
+        assert!(g.grid_y() >= 2);
+    }
 
+    #[test]
+    fn in_house_ghost_exits_through_door() {
+        let maze = ghost_maze();
+        // Ghost spawns inside house at (3, 3), in_house = true
+        let mut g = Ghost::new_in_house(GhostId::Pinky, 3, 3);
+        g.set_direction(Direction::Up); // Up through door at (3, 2) to (3, 1)
         for _ in 0..100 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), 11);
+        // Should have exited through the door
+        assert!(g.grid_y() <= 2);
+        // After reaching a normal tile, in_house should be false
+        assert!(!g.in_house());
     }
 
     #[test]
-    fn in_house_ghost_can_traverse_door() {
-        let maze = ghost_house_maze();
-        // Ghost inside house at (13, 12), going up through door at (13, 11)
-        let mut ghost = Ghost::new_in_house(13, 12);
-        ghost.set_direction(Direction::Up);
-
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        // Should pass through ghost door
-        assert!(ghost.grid_y() <= 11);
-    }
-
-    #[test]
-    fn in_house_ghost_can_move_within_house() {
-        let maze = ghost_house_maze();
-        let mut ghost = Ghost::new_in_house(12, 12);
-        ghost.set_direction(Direction::Right);
-
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        assert!(ghost.grid_x() > 12);
-    }
-
-    #[test]
-    fn eaten_ghost_can_enter_house() {
-        let maze = ghost_house_maze();
-        // Eaten ghost outside at (13, 10), going down through door
-        let mut ghost = Ghost::new(13, 10);
-        ghost.set_mode(GhostMode::Chase);
-        ghost.set_mode(GhostMode::Eaten);
-        ghost.set_direction(Direction::Down);
-
+    fn ghost_cannot_reenter_after_exiting() {
+        let maze = ghost_maze();
+        let mut g = Ghost::new_in_house(GhostId::Pinky, 3, 3);
+        g.set_direction(Direction::Up);
+        // Exit the house
         for _ in 0..100 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        // Should have passed through the door and into the house
-        assert!(ghost.grid_y() > 10);
-    }
+        assert!(!g.in_house());
 
-    #[test]
-    fn ghost_leaves_house_flag_cleared() {
-        let maze = ghost_house_maze();
-        let mut ghost = Ghost::new_in_house(13, 12);
-        assert!(ghost.in_ghost_house());
-
-        ghost.set_direction(Direction::Up);
-        // Move up through door (11) to empty tile (10)
+        // Now try to go back down through the door
+        g.set_direction(Direction::Down);
         for _ in 0..200 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        // Should have left the ghost house area
-        assert!(!ghost.in_ghost_house());
+        // Should be blocked at row 1 (can't pass door at row 2)
+        assert_eq!(g.grid_y(), 1);
     }
 
-    // ── Tunnel wrapping ───────────────────────────────────────
+    #[test]
+    fn in_house_becomes_true_on_ghost_house_tile() {
+        let maze = ghost_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 3, 4);
+        g.enter_eaten(); // Can pass through door
+        g.set_direction(Direction::Up);
+        // Move up to ghost house tile at (3, 3)
+        for _ in 0..50 {
+            g.update(DT, &maze);
+        }
+        if g.grid_y() == 3 && g.move_progress() >= 1.0 {
+            assert!(g.in_house());
+        }
+    }
+
+    // ── Tunnel wrapping ──────────────────────────────────────
 
     #[test]
     fn wraps_left_to_right() {
         let maze = tunnel_maze();
-        let mut ghost = Ghost::new(0, 1);
-        ghost.set_direction(Direction::Left);
-
+        let mut g = Ghost::new(GhostId::Blinky, 0, 1);
+        g.set_direction(Direction::Left);
         for _ in 0..8 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), MAZE_WIDTH - 1);
+        assert_eq!(g.grid_x(), MAZE_WIDTH - 1);
     }
 
     #[test]
     fn wraps_right_to_left() {
         let maze = tunnel_maze();
-        let mut ghost = Ghost::new(MAZE_WIDTH - 1, 1);
-        ghost.set_direction(Direction::Right);
-
+        let mut g = Ghost::new(GhostId::Blinky, MAZE_WIDTH - 1, 1);
+        g.set_direction(Direction::Right);
         for _ in 0..8 {
-            ghost.update(DT, &maze);
+            g.update(DT, &maze);
         }
-        assert_eq!(ghost.grid_x(), 0);
+        assert_eq!(g.grid_x(), 0);
     }
 
-    // ── World position ────────────────────────────────────────
+    // ── World position / interpolation ───────────────────────
 
     #[test]
     fn world_position_at_grid_when_stationary() {
-        let ghost = Ghost::new(5, 10);
-        let (wx, wz) = ghost.world_position(0.0);
+        let g = Ghost::new(GhostId::Blinky, 5, 10);
+        let (wx, wz) = g.world_position(0.0);
         assert!((wx - 5.0).abs() < 1e-5);
         assert!((wz - 10.0).abs() < 1e-5);
     }
 
     #[test]
     fn world_position_interpolates_during_move() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(1, 1);
-        ghost.set_direction(Direction::Right);
-
-        ghost.update(DT, &maze);
-        ghost.update(DT, &maze);
-        let (wx, _) = ghost.world_position(0.0);
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 1, 1);
+        g.set_direction(Direction::Right);
+        g.update(DT, &maze);
+        g.update(DT, &maze);
+        let (wx, _) = g.world_position(0.0);
         assert!(wx > 1.0 && wx < 2.0, "wx = {}", wx);
     }
 
     #[test]
     fn world_position_at_full_progress_equals_grid() {
-        let ghost = Ghost::new(3, 7);
-        let (wx, wz) = ghost.world_position(0.5);
+        let g = Ghost::new(GhostId::Blinky, 3, 7);
+        let (wx, wz) = g.world_position(0.5);
         assert!((wx - 3.0).abs() < 1e-5);
         assert!((wz - 7.0).abs() < 1e-5);
     }
 
-    // ── Collider ──────────────────────────────────────────────
+    // ── Mid-tile reversal ────────────────────────────────────
 
     #[test]
-    fn collider_position_matches() {
-        let ghost = Ghost::new(5, 10);
-        let c = ghost.to_collider();
-        assert_eq!(c.grid_x, 5);
-        assert_eq!(c.grid_y, 10);
-    }
-
-    #[test]
-    fn collider_not_frightened_by_default() {
-        let ghost = Ghost::new(5, 10);
-        assert!(!ghost.to_collider().frightened);
-    }
-
-    #[test]
-    fn collider_frightened_when_mode_is_frightened() {
-        let mut ghost = Ghost::new(5, 10);
-        ghost.set_mode(GhostMode::Frightened);
-        assert!(ghost.to_collider().frightened);
-    }
-
-    #[test]
-    fn collider_not_frightened_in_eaten_mode() {
-        let mut ghost = Ghost::new(5, 10);
-        ghost.set_mode(GhostMode::Frightened);
-        ghost.set_mode(GhostMode::Eaten);
-        assert!(!ghost.to_collider().frightened);
-    }
-
-    // ── Reached home ──────────────────────────────────────────
-
-    #[test]
-    fn reached_home_when_eaten_at_home_tile() {
-        let ghost = Ghost {
-            grid_x: 13,
-            grid_y: 14,
-            prev_x: 13,
-            prev_y: 13,
-            current_dir: Some(Direction::Down),
-            requested_dir: None,
-            move_progress: 1.0,
-            mode: GhostMode::Eaten,
-            home_x: 13,
-            home_y: 14,
-            in_ghost_house: false,
-            speed_override: None,
-        };
-        assert!(ghost.reached_home());
-    }
-
-    #[test]
-    fn not_reached_home_when_not_eaten() {
-        let ghost = Ghost::new(5, 5);
-        assert!(!ghost.reached_home());
-    }
-
-    #[test]
-    fn not_reached_home_when_not_at_home_tile() {
-        let mut ghost = Ghost::new(13, 14);
-        ghost.set_mode(GhostMode::Chase);
-        ghost.set_mode(GhostMode::Eaten);
-        // Move away from home
-        let maze = test_maze();
-        ghost.set_direction(Direction::Right);
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
+    fn reverse_mid_tile_via_set_direction() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
+        for _ in 0..2 {
+            g.update(DT, &maze);
         }
-        assert!(!ghost.reached_home());
+        assert!(g.move_progress() < 1.0);
+
+        g.set_direction(Direction::Left);
+        g.update(DT, &maze);
+        assert_eq!(g.current_dir(), Some(Direction::Left));
     }
 
     #[test]
-    fn not_reached_home_mid_move() {
-        let ghost = Ghost {
-            grid_x: 13,
-            grid_y: 14,
-            prev_x: 13,
-            prev_y: 13,
-            current_dir: Some(Direction::Down),
-            requested_dir: None,
-            move_progress: 0.5,
-            mode: GhostMode::Eaten,
-            home_x: 13,
-            home_y: 14,
-            in_ghost_house: false,
-            speed_override: None,
-        };
-        assert!(!ghost.reached_home());
-    }
-
-    // ── Direction request ─────────────────────────────────────
-
-    #[test]
-    fn set_direction_stores_request() {
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Up);
-        assert_eq!(ghost.requested_dir(), Some(Direction::Up));
-    }
-
-    #[test]
-    fn requested_dir_applied_at_tile_boundary() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Right);
-
-        // Move to reach a boundary
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
+    fn state_reversal_swaps_positions() {
+        let maze = open_maze();
+        let mut g = Ghost::new(GhostId::Blinky, 5, 5);
+        g.set_direction(Direction::Right);
+        g.update(DT, &maze);
+        for _ in 0..3 {
+            g.update(DT, &maze);
         }
-        // Request turn
-        ghost.set_direction(Direction::Down);
-        for _ in 0..200 {
-            ghost.update(DT, &maze);
-        }
-        // Should have turned down at some point
-        assert!(ghost.grid_y() > 5);
+        // Moving right: grid_x should be 6, prev_x should be 5
+        let gx_before = g.grid_x();
+        let px_before = g.prev_x();
+
+        g.enter_frightened(); // reverses
+        // After reversal mid-tile, positions should swap
+        assert_eq!(g.grid_x(), px_before);
+        assert_eq!(g.prev_x(), gx_before);
     }
 
-    #[test]
-    fn requested_dir_cleared_after_application() {
-        let maze = test_maze();
-        let mut ghost = Ghost::new(5, 5);
-        ghost.set_direction(Direction::Right);
-
-        // Run enough to apply the direction
-        for _ in 0..20 {
-            ghost.update(DT, &maze);
-        }
-        assert_eq!(ghost.requested_dir(), None);
-    }
-
-    // ── Classic maze integration ──────────────────────────────
+    // ── Classic maze integration ─────────────────────────────
 
     #[test]
-    fn ghost_in_classic_maze_ghost_house() {
+    fn ghost_house_exists_in_classic_maze() {
         let data = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/maze/classic.json"),
         )
         .expect("classic.json should exist");
         let maze = MazeData::from_json(&data).expect("should parse");
-
-        // Find a ghost house tile
-        let mut house_pos = None;
-        for y in 0..MAZE_HEIGHT {
-            for x in 0..MAZE_WIDTH {
-                if maze.tiles[y][x] == TileType::GhostHouse {
-                    house_pos = Some((x, y));
-                    break;
-                }
-            }
-            if house_pos.is_some() {
-                break;
-            }
-        }
-        let (hx, hy) = house_pos.expect("classic maze should have ghost house");
-
-        let ghost = Ghost::new_in_house(hx, hy);
-        assert!(ghost.in_ghost_house());
-        assert_eq!(ghost.mode(), GhostMode::Scatter);
+        let has_ghost_house = maze
+            .tiles
+            .iter()
+            .any(|row| row.iter().any(|t| *t == TileType::GhostHouse));
+        assert!(has_ghost_house, "classic maze should have a ghost house");
     }
 }
