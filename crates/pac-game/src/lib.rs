@@ -1,5 +1,6 @@
 pub mod maze;
 pub mod maze_renderer;
+pub mod pacman;
 pub mod pellet;
 pub mod ui;
 
