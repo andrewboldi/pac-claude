@@ -1732,6 +1732,7 @@ dependencies = [
  "image",
  "log",
  "pac-math",
+ "pollster",
  "wgpu",
 ]
 
