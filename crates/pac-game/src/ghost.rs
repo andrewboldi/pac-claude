@@ -75,6 +75,9 @@ pub struct Ghost {
     home_y: usize,
     /// Whether this ghost is currently inside the ghost house.
     in_ghost_house: bool,
+    /// Optional speed override set by AI (e.g. Cruise Elroy).
+    /// When `Some`, takes precedence over mode-based speed.
+    speed_override: Option<f32>,
 }
 
 impl Ghost {
@@ -95,6 +98,7 @@ impl Ghost {
             home_x: grid_x,
             home_y: grid_y,
             in_ghost_house: false,
+            speed_override: None,
         }
     }
 
@@ -154,9 +158,21 @@ impl Ghost {
         self.in_ghost_house
     }
 
-    /// Movement speed for the current mode in tiles per second.
+    /// Movement speed in tiles per second.
+    ///
+    /// Returns the AI speed override if set, otherwise the mode-based speed.
     pub fn speed(&self) -> f32 {
-        self.mode.speed()
+        self.speed_override.unwrap_or_else(|| self.mode.speed())
+    }
+
+    /// Override the mode-based speed (used by AI for Cruise Elroy, etc.).
+    pub fn set_speed_override(&mut self, speed: f32) {
+        self.speed_override = Some(speed);
+    }
+
+    /// Clear any speed override, reverting to mode-based speed.
+    pub fn clear_speed_override(&mut self) {
+        self.speed_override = None;
     }
 
     // ── Direction & mode ──────────────────────────────────────
@@ -266,6 +282,23 @@ impl Ghost {
             && self.grid_x == self.home_x
             && self.grid_y == self.home_y
             && self.move_progress >= 1.0
+    }
+
+    // ── AI helpers ─────────────────────────────────────────────
+
+    /// Whether the ghost can move in the given direction from its current tile.
+    ///
+    /// Used by AI controllers to evaluate available directions.
+    pub fn is_direction_passable(&self, dir: Direction, maze: &MazeData) -> bool {
+        self.can_move(dir, maze)
+    }
+
+    /// Compute the neighbor tile in the given direction, with tunnel wrapping.
+    ///
+    /// Used by AI controllers to evaluate distance to target from each
+    /// candidate direction.
+    pub fn neighbor_tile(&self, dir: Direction) -> (usize, usize) {
+        self.target_tile(self.grid_x, self.grid_y, dir)
     }
 
     // ── Internal ──────────────────────────────────────────────
@@ -994,6 +1027,7 @@ mod tests {
             home_x: 13,
             home_y: 14,
             in_ghost_house: false,
+            speed_override: None,
         };
         assert!(ghost.reached_home());
     }
@@ -1032,6 +1066,7 @@ mod tests {
             home_x: 13,
             home_y: 14,
             in_ghost_house: false,
+            speed_override: None,
         };
         assert!(!ghost.reached_home());
     }
