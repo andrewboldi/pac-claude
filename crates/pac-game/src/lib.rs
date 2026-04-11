@@ -7,6 +7,7 @@ pub mod maze;
 pub mod maze_renderer;
 pub mod pacman;
 pub mod pellet;
+pub mod sound;
 pub mod ui;
 
 pub use pac_math;
