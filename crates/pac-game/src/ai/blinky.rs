@@ -417,7 +417,7 @@ mod tests {
         ai.update(&mut ghost, &pacman, &maze, 5);
         // Elroy level set, but speed override cleared for frightened mode.
         assert_eq!(ai.elroy_level(), 2);
-        assert!((ghost.speed() - 5.0).abs() < f32::EPSILON); // FRIGHTENED_SPEED
+        assert!((ghost.speed() - 4.0).abs() < f32::EPSILON); // FRIGHTENED_SPEED
     }
 
     #[test]
