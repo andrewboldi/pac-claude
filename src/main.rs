@@ -70,13 +70,23 @@ const CLYDE_SPAWN: (usize, usize) = (15, 14);
 
 fn default_camera() -> Camera {
     let mut cam = Camera::default();
-    cam.position = Vec3::new(13.5, 35.0, 20.0);
-    cam.pitch = -1.1;
-    cam.yaw = std::f32::consts::FRAC_PI_2;
-    cam.fov_y = std::f32::consts::FRAC_PI_4;
+    cam.position = Vec3::new(14.0, 0.4, 23.0);
+    cam.pitch = 0.0;
+    cam.yaw = -std::f32::consts::FRAC_PI_2; // facing Up (-Z)
+    cam.fov_y = std::f32::consts::FRAC_PI_2; // 90° FOV for immersive corridors
     cam.near = 0.1;
     cam.far = 200.0;
     cam
+}
+
+/// Map Pac-Man direction to camera yaw.
+fn direction_to_yaw(dir: Direction) -> f32 {
+    match dir {
+        Direction::Right => 0.0,
+        Direction::Down => std::f32::consts::FRAC_PI_2,
+        Direction::Left => std::f32::consts::PI,
+        Direction::Up => -std::f32::consts::FRAC_PI_2,
+    }
 }
 
 // ── GPU render state ────────────────────────────────────────────────
@@ -116,6 +126,7 @@ struct GameState {
     score: u32,
     lives: u32,
     extra_life_awarded: bool,
+    camera_yaw: f32,
 }
 
 impl GameState {
@@ -151,6 +162,7 @@ impl GameState {
             score: 0,
             lives: STARTING_LIVES,
             extra_life_awarded: false,
+            camera_yaw: -std::f32::consts::FRAC_PI_2, // facing Up initially
         }
     }
 
@@ -341,7 +353,7 @@ fn update_playing(game: &mut GameState, dt: f32) {
 }
 
 /// Update scene graph transforms from game state for rendering.
-fn sync_scene(render: &mut RenderState, game: &GameState, alpha: f64) {
+fn sync_scene(render: &mut RenderState, game: &mut GameState, alpha: f64) {
     let alpha = alpha as f32;
 
     // Update Pac-Man scene node position.
@@ -362,6 +374,25 @@ fn sync_scene(render: &mut RenderState, game: &GameState, alpha: f64) {
             .transform
             .position = Vec3::new(gx, float_y, gz);
     }
+
+    // ── First-person POV camera ────────────────────────────────────
+    // Smoothly rotate toward Pac-Man's current direction.
+    if let Some(dir) = game.pacman.current_dir() {
+        let target_yaw = direction_to_yaw(dir);
+        // Shortest-path angular interpolation
+        let mut delta = target_yaw - game.camera_yaw;
+        if delta > std::f32::consts::PI {
+            delta -= 2.0 * std::f32::consts::PI;
+        }
+        if delta < -std::f32::consts::PI {
+            delta += 2.0 * std::f32::consts::PI;
+        }
+        game.camera_yaw += delta * 0.15; // smooth turn
+    }
+
+    render.camera.position = Vec3::new(pac_x, 0.4, pac_z);
+    render.camera.pitch = 0.0;
+    render.camera.yaw = game.camera_yaw;
 
     // Update camera aspect ratio.
     let (w, h) = render.gpu.size();
@@ -524,10 +555,8 @@ impl ApplicationHandler for App {
         };
         let maze_scene = maze_renderer::build_maze_scene(&mut scene, &maze, &maze_config);
 
-        // Pac-Man entity node (sphere).
+        // Pac-Man entity node — hidden in first-person mode (camera is the player).
         let pacman_node = scene.add_child(scene.root(), Transform::IDENTITY);
-        scene.node_mut(pacman_node).mesh = Some(2);
-        scene.node_mut(pacman_node).material = Some(4);
 
         // Ghost entity nodes (spheres with ghost-colored materials).
         let ghost_mat_indices = [5usize, 6, 7, 8];
